@@ -368,3 +368,7 @@ python tests/fixtures/emu.py target/release/rustimgmount.exe target/release/exam
 - `src/winutil.rs`: UAC elevation, Explorer registration, file associations, setup (PATH, shortcut, autostart)
 - `src/bin/rustimgmountw/`: the windowless companion (`main.rs`: hidden runner, progress and error
   dialogs; `convertui.rs`: the Convert dialog and the conversion queue; `tray.rs`: the tray app)
+
+## License
+
+MIT; see [LICENSE](LICENSE). RAR support is built from RARLAB's UnRAR source, which has its own terms: see [LICENSE-UNRAR.txt](LICENSE-UNRAR.txt).
