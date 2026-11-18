@@ -62,6 +62,7 @@ Filename: "{app}\rustimgmount.exe"; Parameters: "setup --remove --keep-files"; F
 ; Written by `rustimgmount setup`, not by this installer.
 Type: files; Name: "{app}\AppxManifest.xml"
 Type: filesandordirs; Name: "{app}\assets"
+Type: filesandordirs; Name: "{app}\microsoft.system.package.metadata"
 Type: files; Name: "{app}\*.old"
 
 [Code]

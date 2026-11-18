@@ -210,6 +210,38 @@ pub fn register_modern_menu(dir: &std::path::Path) -> Result<()> {
     ))
 }
 
+const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\rustimgmount";
+
+/// List rustimgmount in Settings > Apps > Installed apps, so it can be uninstalled from
+/// there. Only for copies set up with `rustimgmount setup`: the installer adds its own
+/// entry (and its own uninstaller, unins000.exe).
+pub fn register_uninstaller(dir: &std::path::Path) -> Result<()> {
+    if dir.join("unins000.exe").exists() {
+        reg_delete_tree(HKEY_CURRENT_USER, UNINSTALL_KEY);
+        return Ok(());
+    }
+    let exe = dir.join("rustimgmount.exe");
+    // Through the windowless companion when it is there, so no console window flashes up.
+    let w = dir.join("rustimgmountw.exe");
+    let runner = if w.exists() { &w } else { &exe };
+    for (name, value) in [
+        ("DisplayName", "rustimgmount".to_string()),
+        ("DisplayVersion", env!("CARGO_PKG_VERSION").to_string()),
+        ("Publisher", "rustimgmount".to_string()),
+        ("DisplayIcon", exe.display().to_string()),
+        ("InstallLocation", dir.display().to_string()),
+        ("URLInfoAbout", "https://github.com/seanrb93/rustimgmount".to_string()),
+        ("UninstallString", format!("\"{}\" setup --remove", runner.display())),
+    ] {
+        reg_set(HKEY_CURRENT_USER, UNINSTALL_KEY, Some(name), &value)?;
+    }
+    Ok(())
+}
+
+pub fn unregister_uninstaller() {
+    reg_delete_tree(HKEY_CURRENT_USER, UNINSTALL_KEY);
+}
+
 /// Is the tray app running? (It holds a named mutex while it is.)
 pub fn tray_running() -> bool {
     use windows_sys::Win32::System::Threading::OpenMutexW;
@@ -411,7 +443,7 @@ pub fn repair_shell_if_moved() -> bool {
     if moved(&format!(r"Software\Classes\SystemFileAssociations\.iso\shell\{}\command", VERBS[0].0)) {
         repaired |= install_shell().is_ok();
     }
-    if moved(&format!(r"Software\Classes\{PROGID}\shell\open\command")) {
+    if moved(&format!(r"Software\Classes\{}\shell\open\command", progid("iso"))) || moved(&format!(r"Software\Classes\{OLD_PROGID}\shell\open\command")) {
         repaired |= register_progid().is_ok();
     }
     repaired
@@ -539,8 +571,36 @@ pub fn autostart_enabled() -> bool {
 
 // ---------------------------------------------------------------- file associations
 
-/// The file type rustimgmount registers; extensions point at it.
-const PROGID: &str = "rustimgmount.image";
+/// Until version 0.1.1 every extension pointed at this one file type.
+const OLD_PROGID: &str = "rustimgmount.image";
+
+/// The file type registered for an extension. Each format has its own, so that each can
+/// have its own icon and description in Explorer.
+fn progid(ext: &str) -> String {
+    format!("rustimgmount.file.{ext}")
+}
+
+fn is_our_progid(id: &str) -> bool {
+    id == OLD_PROGID || id.starts_with("rustimgmount.file.")
+}
+
+// FORMAT_ICONS: which icon resource belongs to which extension (written by build.rs).
+include!(concat!(env!("OUT_DIR"), "/format_icons.rs"));
+
+/// What Explorer shows in its "Type" column.
+fn type_name(ext: &str) -> String {
+    let upper = ext.to_uppercase();
+    match ext {
+        "iso" | "bin" | "nrg" | "mdf" | "mdx" | "cdi" | "b5t" | "b6t" | "pdi" | "isz" | "chd" | "cso" | "zso" | "dax" | "ecm" | "pbp" => format!("{upper} disc image"),
+        "cue" | "mds" | "ccd" | "gdi" => format!("{upper} disc image sheet"),
+        "vhd" | "vhdx" | "avhd" | "avhdx" | "vmdk" | "vdi" | "qcow2" | "hdd" => format!("{upper} virtual disk"),
+        "hdi" | "fdi" | "nhd" => format!("{upper} PC-98 disk image"),
+        "st" | "msa" => format!("{upper} Atari ST disk image"),
+        "d88" | "d77" | "d98" | "flp" | "vfd" => format!("{upper} floppy image"),
+        "e01" | "ex01" => format!("{upper} forensic disk image"),
+        _ => format!("{upper} disk image"),
+    }
+}
 const APP_KEY: &str = r"Software\rustimgmount";
 
 /// Extensions double-click should mount. `.m3u` is left out on purpose: music players use
@@ -552,20 +612,29 @@ pub fn assoc_exts() -> Vec<&'static str> {
 fn register_progid() -> Result<()> {
     let exe = std::env::current_exe()?;
     let exe_s = exe.to_string_lossy();
-    let base = format!(r"Software\Classes\{PROGID}");
-    reg_set(HKEY_CURRENT_USER, &base, None, "Disk image")?;
-    reg_set(HKEY_CURRENT_USER, &base, Some("FriendlyTypeName"), "Disk image (rustimgmount)")?;
-    reg_set(HKEY_CURRENT_USER, &format!(r"{base}\DefaultIcon"), None, &format!("{exe_s},0"))?;
-    reg_set(HKEY_CURRENT_USER, &format!(r"{base}\shell"), None, "open")?;
-    reg_set(HKEY_CURRENT_USER, &format!(r"{base}\shell\open"), None, "Mount")?;
-    reg_set(HKEY_CURRENT_USER, &format!(r"{base}\shell\open\command"), None, &ui_command("mount")?)?;
+    reg_delete_tree(HKEY_CURRENT_USER, &format!(r"Software\Classes\{OLD_PROGID}"));
+    let open = ui_command("mount")?;
     // Show up in Settings > Default apps, so the user can pick it where Windows requires that.
     let caps = format!(r"{APP_KEY}\Capabilities");
     reg_set(HKEY_CURRENT_USER, &caps, Some("ApplicationName"), "rustimgmount")?;
     reg_set(HKEY_CURRENT_USER, &caps, Some("ApplicationDescription"), "Mounts disk and disc images as drives")?;
     reg_set(HKEY_CURRENT_USER, &caps, Some("ApplicationIcon"), &format!("{exe_s},0"))?;
     for ext in assoc_exts() {
-        reg_set(HKEY_CURRENT_USER, &format!(r"{caps}\FileAssociations"), Some(&format!(".{ext}")), PROGID)?;
+        let id = progid(ext);
+        let base = format!(r"Software\Classes\{id}");
+        let name = type_name(ext);
+        reg_set(HKEY_CURRENT_USER, &base, None, &name)?;
+        reg_set(HKEY_CURRENT_USER, &base, Some("FriendlyTypeName"), &name)?;
+        // The format's own icon, or the program's if there is none for it.
+        let icon = match FORMAT_ICONS.iter().find(|(e, _)| *e == ext) {
+            Some((_, res)) => format!("{exe_s},-{res}"),
+            None => format!("{exe_s},0"),
+        };
+        reg_set(HKEY_CURRENT_USER, &format!(r"{base}\DefaultIcon"), None, &icon)?;
+        reg_set(HKEY_CURRENT_USER, &format!(r"{base}\shell"), None, "open")?;
+        reg_set(HKEY_CURRENT_USER, &format!(r"{base}\shell\open"), None, "Mount")?;
+        reg_set(HKEY_CURRENT_USER, &format!(r"{base}\shell\open\command"), None, &open)?;
+        reg_set(HKEY_CURRENT_USER, &format!(r"{caps}\FileAssociations"), Some(&format!(".{ext}")), &id)?;
     }
     reg_set(HKEY_CURRENT_USER, r"Software\RegisteredApplications", Some("rustimgmount"), &caps)?;
     Ok(())
@@ -602,15 +671,16 @@ pub fn associate() -> Result<AssocReport> {
     for ext in assoc_exts() {
         let key = format!(r"Software\Classes\.{ext}");
         match reg_get(HKEY_CURRENT_USER, &key) {
-            Some(prev) if prev != PROGID && !prev.is_empty() => {
+            Some(prev) if !is_our_progid(&prev) && !prev.is_empty() => {
                 if reg_get_value(HKEY_CURRENT_USER, &saved, Some(&format!(".{ext}"))).is_none() {
                     reg_set(HKEY_CURRENT_USER, &saved, Some(&format!(".{ext}")), &prev)?;
                 }
             }
             _ => {}
         }
-        reg_set(HKEY_CURRENT_USER, &key, None, PROGID)?;
-        reg_set(HKEY_CURRENT_USER, &format!(r"{key}\OpenWithProgids"), Some(PROGID), "")?;
+        reg_set(HKEY_CURRENT_USER, &key, None, &progid(ext))?;
+        reg_delete_value(HKEY_CURRENT_USER, &format!(r"{key}\OpenWithProgids"), OLD_PROGID);
+        reg_set(HKEY_CURRENT_USER, &format!(r"{key}\OpenWithProgids"), Some(&progid(ext)), "")?;
     }
     notify_assoc_changed();
     // Ours if the command runs rustimgmount.exe or rustimgmountw.exe from this folder.
@@ -635,15 +705,17 @@ pub fn unassociate() -> Result<()> {
     let saved = format!(r"{APP_KEY}\PreviousDefaults");
     for ext in assoc_exts() {
         let key = format!(r"Software\Classes\.{ext}");
-        reg_delete_value(HKEY_CURRENT_USER, &format!(r"{key}\OpenWithProgids"), PROGID);
-        if reg_get(HKEY_CURRENT_USER, &key).as_deref() == Some(PROGID) {
+        reg_delete_value(HKEY_CURRENT_USER, &format!(r"{key}\OpenWithProgids"), OLD_PROGID);
+        reg_delete_value(HKEY_CURRENT_USER, &format!(r"{key}\OpenWithProgids"), &progid(ext));
+        reg_delete_tree(HKEY_CURRENT_USER, &format!(r"Software\Classes\{}", progid(ext)));
+        if reg_get(HKEY_CURRENT_USER, &key).is_some_and(|p| is_our_progid(&p)) {
             match reg_get_value(HKEY_CURRENT_USER, &saved, Some(&format!(".{ext}"))) {
                 Some(prev) => reg_set(HKEY_CURRENT_USER, &key, None, &prev)?,
                 None => reg_delete_value(HKEY_CURRENT_USER, &key, ""),
             }
         }
     }
-    reg_delete_tree(HKEY_CURRENT_USER, &format!(r"Software\Classes\{PROGID}"));
+    reg_delete_tree(HKEY_CURRENT_USER, &format!(r"Software\Classes\{OLD_PROGID}"));
     reg_delete_value(HKEY_CURRENT_USER, r"Software\RegisteredApplications", "rustimgmount");
     reg_delete_tree(HKEY_CURRENT_USER, APP_KEY);
     notify_assoc_changed();

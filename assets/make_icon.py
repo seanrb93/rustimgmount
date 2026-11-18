@@ -55,13 +55,15 @@ DISC_C, DISC_R = (112, 112), 104
 BADGE = dict(cx=188, cy=188, hw=58, hh=48, r=14)
 
 
-def render(n):
+def render(n, badge=True, center=None, radius=None):
+    """The icon at n x n pixels. Without `badge` it is the disc alone (the base of the
+    per-format file icons, see make_format_icons.py), optionally moved and resized."""
     px = 256 / n  # design units per pixel
     small = n <= 24
     img = [[0.0, 0.0, 0.0, 0.0] for _ in range(n * n)]
 
-    def cov(d):
-        return clamp(0.5 - d / px)
+    def cov(d, unit=None):
+        return clamp(0.5 - d / (unit or px))
 
     def over(i, col, a):
         if a <= 0:
@@ -75,18 +77,23 @@ def render(n):
             dst[k] = (col[k] * sa + dst[k] * dst[3] * (1 - sa)) / oa
         dst[3] = oa
 
-    cx, cy = DISC_C
+    cx, cy = center or DISC_C
+    scale = (radius or DISC_R) / DISC_R
     # Small sizes get a bigger drive badge so the "mount" arrow stays readable.
     b = dict(cx=176, cy=178, hw=78, hh=66, r=18) if small else BADGE
     for j in range(n):
         for i in range(n):
             x, y = (i + 0.5) * px, (j + 0.5) * px
             k = j * n + i
-            dist = math.hypot(x - cx, y - cy)
+            # (The disc is drawn in its own coordinates, so it can be moved and resized.)
+            dist = math.hypot(x - cx, y - cy) / scale
             ang = math.atan2(y - cy, x - cx)
+            x, y = cx + (x - cx) / scale, cy + (y - cy) / scale
+            px_d = px / scale
 
+            dcov = lambda d: cov(d, px_d)
             # Disc body: silver with two soft reflection wedges and a faint iridescent tint.
-            a = cov(dist - DISC_R)
+            a = dcov(dist - DISC_R)
             if a > 0:
                 sheen = 0.5 + 0.5 * math.cos(2 * (ang + 0.75))
                 base = lerp(hexc("#AEB7C1"), hexc("#F3F6F9"), 0.25 + 0.75 * sheen ** 1.6)
@@ -95,17 +102,23 @@ def render(n):
                 col[3] = 1
                 over(k, col, a)
                 # darker outer rim
-                rim = max(1.6, 0.55 * px)  # at least ~1 px wide at small sizes
-                over(k, hexc("#7D8792"), cov(abs(dist - (DISC_R - rim)) - rim) * a)
+                rim = max(1.6, 0.55 * px_d)  # at least ~1 px wide at small sizes
+                over(k, hexc("#7D8792"), dcov(abs(dist - (DISC_R - rim)) - rim) * a)
             # Rust-copper label ring with a light inner and outer edge.
-            a = cov(d_ring(x, y, cx, cy, 24, 56))
+            a = dcov(d_ring(x, y, cx, cy, 24, 56))
             if a > 0:
                 t = clamp(((x - cx) + (y - cy) + 56) / 112)
                 over(k, lerp(hexc("#D9692A"), hexc("#8A3410"), t), a)
-                over(k, hexc("#F29A5C", 0.9), cov(abs(dist - 55) - 1.4))
-                over(k, hexc("#5E2208", 0.6), cov(abs(dist - 25) - 1.2))
+                over(k, hexc("#F29A5C", 0.9), dcov(abs(dist - 55) - 1.4))
+                over(k, hexc("#5E2208", 0.6), dcov(abs(dist - 25) - 1.2))
             # Clear plastic hub around the hole.
-            over(k, hexc("#E9EEF2", 0.85), cov(d_ring(x, y, cx, cy, 13, 24)))
+            over(k, hexc("#E9EEF2", 0.85), dcov(d_ring(x, y, cx, cy, 13, 24)))
+
+            if not badge:
+                hole = dcov(dist - 13)
+                if hole > 0:
+                    img[k][3] *= 1 - hole
+                continue
 
             # Drive badge: soft shadow, dark body with outline.
             over(k, [0, 0, 0, 0.30], cov(d_rrect(x, y, b["cx"] + 3, b["cy"] + 4, b["hw"] + 2, b["hh"] + 2, b["r"] + 2)))

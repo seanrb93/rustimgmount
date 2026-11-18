@@ -997,6 +997,7 @@ fn setup(no_menu: bool) -> Result<i32> {
     }
     let exe = dest.join("rustimgmount.exe");
     println!("Installed to {}", dest.display());
+    winutil::register_uninstaller(&dest)?;
     if winutil::add_to_path(&dest)? {
         println!("Added to your PATH (open a new terminal to use `rustimgmount` anywhere).");
     }
@@ -1048,6 +1049,7 @@ fn setup_remove(purge: bool, keep_files: bool) -> Result<i32> {
     let _ = run_installed(&exe, &["unassociate"]);
     let _ = run_installed(&exe, &["uninstall"]);
     winutil::unregister_modern_menu();
+    winutil::unregister_uninstaller();
     winutil::set_autostart(false)?;
     let _ = std::fs::remove_file(winutil::start_menu_shortcut());
     winutil::remove_from_path(&dest)?;

@@ -23,6 +23,7 @@ const ID_UNMOUNT_ALL: usize = 11;
 const ID_AUTOSTART: usize = 12;
 const ID_EXIT: usize = 13;
 const ID_CONVERT: usize = 14;
+const ID_UNINSTALL: usize = 15;
 /// Recently mounted images: ID_RECENT_BASE + index
 const ID_RECENT_BASE: usize = 500;
 /// Per-image items: ID_IMAGE_BASE + index * 4 + (0 = open, 1 = unmount)
@@ -158,6 +159,8 @@ unsafe fn show_menu(hwnd: HWND) {
     append(menu, MF_SEPARATOR, 0, "");
     let auto = cli_output(&["autostart", "status"]).map(|s| s.trim() == "on").unwrap_or(false);
     append(menu, MF_STRING | if auto { MF_CHECKED } else { MF_UNCHECKED }, ID_AUTOSTART, "Start with Windows");
+    append(menu, MF_SEPARATOR, 0, "");
+    append(menu, MF_STRING, ID_UNINSTALL, "Uninstall rustimgmount...");
     append(menu, MF_STRING, ID_EXIT, "Exit");
     IMAGES = imgs;
     let mut pt = POINT { x: 0, y: 0 };
@@ -196,6 +199,28 @@ unsafe fn pick_image(hwnd: HWND, title: &str) -> Option<String> {
     }
     let end = file.iter().position(|&c| c == 0).unwrap_or(0);
     Some(String::from_utf16_lossy(&file[..end]))
+}
+
+/// Remove rustimgmount from this PC: through the installer's uninstaller when it was
+/// installed that way (it asks for confirmation itself), otherwise `rustimgmount setup --remove`.
+unsafe fn uninstall(hwnd: HWND) {
+    let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_owned())) else { return };
+    let unins = dir.join("unins000.exe");
+    if unins.exists() {
+        let _ = std::process::Command::new(unins).spawn();
+        return;
+    }
+    let text = wide(
+        "Remove rustimgmount from this PC?\n\nThis removes the program, its right-click menu, double-click mounting and the Start Menu entry. \
+         Images that are mounted stay mounted until you eject them or restart.",
+    );
+    let title = wide("Uninstall rustimgmount");
+    if MessageBoxW(hwnd, text.as_ptr(), title.as_ptr(), MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_SETFOREGROUND) != IDYES {
+        return;
+    }
+    let Some(cli) = cli_exe() else { return };
+    // The removal stops this tray app itself, so it is started on its own and not waited for.
+    let _ = std::process::Command::new(cli).args(["setup", "--remove"]).creation_flags(0x0800_0000).spawn();
 }
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -242,6 +267,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         message_box("Could not change the start-with-Windows setting.", true);
                     }
                 }
+                ID_UNINSTALL => uninstall(hwnd),
                 ID_EXIT => {
                     DestroyWindow(hwnd);
                 }

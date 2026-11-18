@@ -10,7 +10,13 @@ user account only, needs no administrator rights, and sets up double-click mount
 and the Start Menu entry for the tray app. Tick "Start rustimgmount's tray app when I sign in to Windows"
 on the way if you want the tray icon there after every sign-in (you can change it later with **Start with
 Windows** in the tray menu). The installer isn't code-signed, so Windows may warn that the
-publisher is unknown: choose "More info", then "Run anyway". Uninstall it from Settings > Apps.
+publisher is unknown: choose "More info", then "Run anyway".
+
+**Uninstall:** Settings > Apps > Installed apps > rustimgmount > Uninstall, or **Uninstall rustimgmount...**
+in the tray menu. Both work whether it was installed with the installer or with `rustimgmount setup`; from
+a terminal it's `rustimgmount setup --remove`. Uninstalling removes the program, the associations, the
+menus, the PATH entry and the shortcuts. Records and the conversion cache in `%LOCALAPPDATA%\rustimgmount`
+are kept unless you add `--purge`.
 
 Or get the zip from the same page, unpack it anywhere and run `rustimgmount setup`. Or build it yourself
 (see [Building](#building)) and run `target\release\rustimgmount.exe setup`.
@@ -158,10 +164,18 @@ You can also drag an image onto `rustimgmount.exe`.
 
 Run it again after rebuilding to update the installed copy. `setup --remove` undoes everything.
 
+**File icons.** Each format gets its own icon and description in Explorer: a disc for optical images
+(blue label) and emulator formats (purple), a hard drive for virtual-machine disks (green), a plain file
+for raw and forensic images (slate) and a floppy disk for floppy and retro-computer formats (teal), each
+with the format's name on the label. They show for the file types rustimgmount is the default app for;
+where Windows keeps another app as the default, switch it in Settings > Apps > Default apps > rustimgmount.
+Explorer caches icons, so new ones can take a sign-out to appear. The icons are drawn by
+`assets/make_format_icons.py` (needs Pillow) and embedded in `rustimgmount.exe`.
+
 **Tray app.** The Start Menu entry (or `rustimgmountw --tray`) puts a disc icon in the notification area.
 Click it for a menu of what's mounted (open or unmount each image), **Mount image...**, **Mount recent**
-(the last ten images you mounted), **Convert image...** (opens the Convert dialog), **Unmount all** and
-**Start with Windows**.
+(the last ten images you mounted), **Convert image...** (opens the Convert dialog), **Unmount all**,
+**Start with Windows** and **Uninstall rustimgmount...**.
 
 **Progress.** Mounting from Explorer, the tray or the right-click menu shows no window when it's quick. If
 it takes more than about 1.5 seconds (converting a big image), a small progress dialog appears with a
