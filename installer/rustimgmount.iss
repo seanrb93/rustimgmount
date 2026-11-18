@@ -37,6 +37,7 @@ WizardStyle=modern
 CloseApplications=no
 
 [Tasks]
+Name: "associate"; Description: "Mount disk images when I double-click them (associate the image file types with rustimgmount)"
 ; Off unless ticked. The same setting is "Start with Windows" in the tray app's menu.
 Name: "autostart"; Description: "Start rustimgmount's tray app when I sign in to Windows"; Flags: unchecked
 
@@ -49,9 +50,12 @@ Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE-UNRAR.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Run]
-Filename: "{app}\rustimgmount.exe"; Parameters: "setup"; Flags: runhidden; StatusMsg: "Setting up file associations and the right-click menu..."
+Filename: "{app}\rustimgmount.exe"; Parameters: "setup"; Flags: runhidden; StatusMsg: "Setting up file associations and the right-click menu..."; Tasks: associate
+Filename: "{app}\rustimgmount.exe"; Parameters: "setup --no-associate"; Flags: runhidden; StatusMsg: "Setting up the right-click menu..."; Tasks: not associate
 Filename: "{app}\rustimgmount.exe"; Parameters: "autostart on"; Flags: runhidden; Tasks: autostart
 Filename: "{app}\rustimgmountw.exe"; Parameters: "--tray"; Description: "Start the tray app now"; Flags: postinstall nowait skipifsilent
+; Windows leaves some types (.vhd, .img, ...) with the app that had them until the user picks.
+Filename: "{app}\rustimgmount.exe"; Parameters: "associate"; Description: "Open Settings to choose rustimgmount for file types that other apps also open"; Flags: postinstall nowait skipifsilent runhidden unchecked; Tasks: associate
 
 [UninstallRun]
 ; Removes the associations, menus, PATH entry and shortcut. Mounted images, records and

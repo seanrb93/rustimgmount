@@ -7,9 +7,10 @@ command line, by double-clicking images, or from its notification-area (tray) ic
 **Install:** download the installer (`rustimgmount-...-setup.exe`) from the
 [latest release](https://github.com/seanrb93/rustimgmount/releases/latest) and run it. It installs for your
 user account only, needs no administrator rights, and sets up double-click mounting, the right-click menu
-and the Start Menu entry for the tray app. Tick "Start rustimgmount's tray app when I sign in to Windows"
-on the way if you want the tray icon there after every sign-in (you can change it later with **Start with
-Windows** in the tray menu). The installer isn't code-signed, so Windows may warn that the
+and the Start Menu entry for the tray app. It has two options: **Mount disk images when I double-click
+them** (on by default; untick it to leave your file associations alone) and **Start rustimgmount's tray
+app when I sign in to Windows** (off by default; you can change it later with **Start with Windows** in the
+tray menu). The installer isn't code-signed, so Windows may warn that the
 publisher is unknown: choose "More info", then "Run anyway".
 
 **Uninstall:** Settings > Apps > Installed apps > rustimgmount > Uninstall, or **Uninstall rustimgmount...**
@@ -151,7 +152,7 @@ rustimgmount uninstall
 rustimgmount associate                  # double-clicking a supported image mounts it and opens the drive
 rustimgmount unassociate                # undo, restoring your previous defaults
 rustimgmount audio <image> [folder]     # save a disc's CD audio tracks as WAV files
-rustimgmount setup [--no-menu]          # install for your user account (see below)
+rustimgmount setup [--no-menu] [--no-associate]   # install for your user account (see below)
 rustimgmount setup --remove [--purge]   # undo setup (--purge also deletes records and cache)
 ```
 
@@ -167,8 +168,15 @@ Run it again after rebuilding to update the installed copy. `setup --remove` und
 **File icons.** Each format gets its own icon and description in Explorer: a disc for optical images
 (blue label) and emulator formats (purple), a hard drive for virtual-machine disks (green), a plain file
 for raw and forensic images (slate) and a floppy disk for floppy and retro-computer formats (teal), each
-with the format's name on the label. They show for the file types rustimgmount is the default app for;
-where Windows keeps another app as the default, switch it in Settings > Apps > Default apps > rustimgmount.
+with the format's name on the label. They show for the file types rustimgmount opens.
+
+**Types that another app can open too.** When another program on the PC also handles a type (Windows itself
+for `.vhd`, `.vhdx` and `.img`; an archiver or another mounting tool for others), Windows does not let any
+program make itself the default: the choice is yours, once per type. Until you make it, Windows shows a
+plain icon for that type and asks what to open it with. Setup lists the types this applies to. To choose
+rustimgmount: right-click a file > Open with > Choose another app > rustimgmount > Always, or use
+Settings > Apps > Default apps > rustimgmount (the installer's last page can open it for you, and so does
+`rustimgmount associate`). After that the type mounts on double-click and gets its icon.
 Explorer caches icons, so new ones can take a sign-out to appear. The icons are drawn by
 `assets/make_format_icons.py` (needs Pillow) and embedded in `rustimgmount.exe`.
 
@@ -363,7 +371,9 @@ Visual Studio C++ tools (the same ones Rust on Windows already uses).
 
 ## Tests
 
-`cargo test` runs everything: unit tests plus all format suites, in about a minute. The suites need
+`cargo test` runs everything: unit tests plus all format suites, in about a minute. The dialog, the
+queue's progress window, the tray and Explorer's menus are checked by hand with the scripts in
+[tests/ui](tests/ui/README.md). The suites need
 Python 3 (standard library only). Without Python they're skipped with a message; set
 `RUSTIMGMOUNT_SKIP_FIXTURES=1` to skip them on purpose. Mounting disk images for real needs admin
 rights, so that check is separate: run `tests/fixtures/admin_mount_test.ps1` as administrator (add

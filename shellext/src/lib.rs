@@ -101,6 +101,31 @@ fn is_mounted(records: &Option<String>, path: &str) -> Option<bool> {
     Some(text.contains(&format!("\"{escaped}\"")) || text.contains(&format!("\"{escaped}#")))
 }
 
+/// Image files Windows has attached as virtual disks right now, lower-cased. This covers
+/// images mounted without rustimgmount (Explorer's own Mount for .iso, .vhd and .vhdx).
+fn attached() -> Vec<String> {
+    use windows::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
+    use windows::Win32::Storage::Vhd::GetAllAttachedVirtualDiskPhysicalPaths;
+    let mut size: u32 = 4096;
+    for _ in 0..4 {
+        let mut buf = vec![0u16; size as usize / 2 + 1];
+        let code = unsafe { GetAllAttachedVirtualDiskPhysicalPaths(&mut size, windows::core::PWSTR(buf.as_mut_ptr())) };
+        if code == ERROR_INSUFFICIENT_BUFFER {
+            continue;
+        }
+        if code.is_err() {
+            break;
+        }
+        let n = (size as usize / 2).min(buf.len());
+        return buf[..n]
+            .split(|&c| c == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| String::from_utf16_lossy(s).trim_start_matches(r"\\?\").to_lowercase())
+            .collect();
+    }
+    Vec::new()
+}
+
 fn records() -> Option<String> {
     let dir = match std::env::var_os("RUSTIMGMOUNT_DATA").filter(|v| !v.is_empty()) {
         Some(d) => PathBuf::from(d),
@@ -177,8 +202,11 @@ impl IExplorerCommand_Impl for Command_Impl {
         let show = match self.0 {
             Verb::Root | Verb::Separator | Verb::More => true,
             Verb::Mount | Verb::Unmount => {
-                let records = records();
-                let mounted: Vec<Option<bool>> = files.iter().map(|f| is_mounted(&records, f)).collect();
+                let (records, attached) = (records(), attached());
+                let mounted: Vec<Option<bool>> = files
+                    .iter()
+                    .map(|f| if attached.contains(&f.to_lowercase()) { Some(true) } else { is_mounted(&records, f) })
+                    .collect();
                 if self.0 == Verb::Mount {
                     // Hidden only when every selected image is known to be mounted already.
                     files.is_empty() || !mounted.iter().all(|m| *m == Some(true))

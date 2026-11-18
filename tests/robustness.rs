@@ -75,6 +75,68 @@ fn cases(rng: &mut Rng) -> Vec<(String, Vec<u8>)> {
         v[n - 12..n - 8].copy_from_slice(b"NER5");
         out.push((format!("n{i}.nrg"), v));
     }
+    // Dynamic VHDs: a valid footer and "cxsparse" header, everything else random (table
+    // offset, entry count, block size, disk size).
+    for i in 0..10 {
+        let mut v = rng.bytes(8192);
+        v[0..8].copy_from_slice(b"conectix");
+        v[16..24].copy_from_slice(&512u64.to_be_bytes());
+        v[60..64].copy_from_slice(&rng.pick(&[2u32, 3, 3, 3, 4, 9]).to_be_bytes());
+        v[512..520].copy_from_slice(b"cxsparse");
+        if i % 2 == 0 {
+            // Plausible numbers, so the reader gets as far as the block table.
+            v[48..56].copy_from_slice(&(rng.next() % (64 << 20)).to_be_bytes());
+            v[528..536].copy_from_slice(&1536u64.to_be_bytes());
+            v[540..544].copy_from_slice(&((rng.next() % 64) as u32).to_be_bytes());
+            v[544..548].copy_from_slice(&(2u32 << 20).to_be_bytes());
+        }
+        out.push((format!("d{i}.vhd"), v));
+    }
+    // VHDX: the signatures and region GUIDs in place, the tables they lead to random.
+    let guid = |b: [u8; 16]| b;
+    let bat = guid([0x66, 0x77, 0xC2, 0x2D, 0x23, 0xF6, 0x00, 0x42, 0x9D, 0x64, 0x11, 0x5E, 0x9B, 0xFD, 0x4A, 0x08]);
+    let meta = guid([0x06, 0xA2, 0x7C, 0x8B, 0x90, 0x47, 0x9A, 0x4B, 0xB8, 0xFE, 0x57, 0x5F, 0x05, 0x0F, 0x88, 0x6E]);
+    for i in 0..10 {
+        let mut v = rng.bytes(400_000);
+        v[0..8].copy_from_slice(b"vhdxfile");
+        for at in [64usize << 10, 128 << 10] {
+            v[at..at + 4].copy_from_slice(b"head");
+            if i % 3 != 0 {
+                v[at + 48..at + 64].fill(0); // no pending log
+            }
+        }
+        let rt = 192usize << 10;
+        v[rt..rt + 4].copy_from_slice(b"regi");
+        v[rt + 8..rt + 12].copy_from_slice(&2u32.to_le_bytes());
+        for (k, (g, off)) in [(bat, 300_000u64), (meta, 262_144u64)].iter().enumerate() {
+            let e = rt + 16 + k * 32;
+            v[e..e + 16].copy_from_slice(g);
+            v[e + 16..e + 24].copy_from_slice(&(if i % 4 == 3 { rng.next() } else { *off }).to_le_bytes());
+            v[e + 24..e + 28].copy_from_slice(&(if i % 5 == 4 { rng.next() as u32 } else { 65_536 }).to_le_bytes());
+        }
+        v[262_144..262_152].copy_from_slice(b"metadata");
+        out.push((format!("x{i}.vhdx"), v));
+    }
+    // CloneCD: a sheet with random track numbers, modes and positions, next to its .img
+    // (and sometimes a .sub of the wrong size).
+    for i in 0..10 {
+        let mut s = String::from("[CloneCD]\nVersion=3\n");
+        for t in 0..(rng.next() % 6) {
+            s.push_str(&format!("[TRACK {}]\n", if rng.next() % 5 == 0 { rng.next() % 5_000_000_000 } else { t + 1 }));
+            for key in ["MODE", "INDEX 0", "INDEX 1", "INDEX 1"] {
+                if rng.next() % 3 != 0 {
+                    s.push_str(&format!("{key}={}\n", rng.pick(&[0u64, 1, 2, 150, 400, 4_294_967_295, 18_446_744_073_709_551_615])));
+                }
+            }
+        }
+        out.push((format!("c{i}.ccd"), s.into_bytes()));
+        let n = rng.pick(&[0usize, 100, 2352 * 3, 2352 * 40 + 7]);
+        out.push((format!("c{i}.img"), rng.bytes(n)));
+        if i % 2 == 0 {
+            let n = rng.pick(&[0usize, 96, 96 * 40]);
+            out.push((format!("c{i}.sub"), rng.bytes(n)));
+        }
+    }
     // Text sheets with random numbers and names.
     let words = ["FILE", "TRACK", "INDEX", "MODE1/2352", "AUDIO", "BINARY", "\"x.bin\"", "99:99:99", "-5", "4294967295", "RW", "FLAT", "SPARSE", "\"a.vmdk\"", "0", "45000", "2352"];
     for (ext, header) in [("cue", ""), ("gdi", "3\n"), ("m3u", ""), ("vmdk", "# Disk DescriptorFile\nparentCID=ffffffff\n")] {
@@ -153,6 +215,16 @@ fn malformed_images_never_crash() {
                     }
                 }
                 let _ = std::fs::remove_file(&out);
+                // VHD and VHDX are only read when converted to something else.
+                if p.extension().is_some_and(|e| e == "vhd" || e == "vhdx") {
+                    let img = p.with_extension("conv.img");
+                    if let Some(code) = run(&exe, &[Path::new("convert"), p, Path::new("--to"), Path::new("img"), &img], &data, Duration::from_secs(20)) {
+                        if code != 0 && code != 1 {
+                            failures.lock().unwrap().push(format!("convert to img {}: exit code {code}", p.display()));
+                        }
+                    }
+                    let _ = std::fs::remove_file(&img);
+                }
                 // The whole-disc path (track lists, raw sectors) used by `convert --to cue/chd`.
                 let cue = p.with_extension("conv.cue");
                 if let Some(code) = run(&exe, &[Path::new("convert"), p, &cue], &data, Duration::from_secs(20)) {

@@ -697,6 +697,21 @@ pub fn associate() -> Result<AssocReport> {
             None => report.others.push((ext, String::from("(nothing)"))),
         }
     }
+    // Where Windows did not hand the type over (another app can open it too, and the choice
+    // is the user's), take the claim back: left in place it would only blank the type's
+    // icon and show our internal name as its description until the user chooses. The type
+    // goes back to what it was, and rustimgmount stays on its "Open with" list and in
+    // Settings > Default apps, where it can be picked.
+    for (ext, _) in &report.others {
+        let key = format!(r"Software\Classes\.{ext}");
+        match reg_get_value(HKEY_CURRENT_USER, &saved, Some(&format!(".{ext}"))) {
+            Some(prev) => reg_set(HKEY_CURRENT_USER, &key, None, &prev)?,
+            None => reg_delete_value(HKEY_CURRENT_USER, &key, ""),
+        }
+    }
+    if !report.others.is_empty() {
+        notify_assoc_changed();
+    }
     Ok(report)
 }
 

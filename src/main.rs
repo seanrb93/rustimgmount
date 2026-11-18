@@ -79,6 +79,9 @@ enum Cmd {
         /// Skip the Explorer right-click menu.
         #[arg(long)]
         no_menu: bool,
+        /// Don't make double-clicking images mount them (and undo it if an earlier setup did).
+        #[arg(long)]
+        no_associate: bool,
         /// Undo setup: remove associations, menu, PATH entry, shortcut and installed files.
         #[arg(long)]
         remove: bool,
@@ -218,12 +221,10 @@ fn run(cli: Cli) -> Result<i32> {
             let r = winutil::associate()?;
             println!("Double-clicking these now mounts them: {}", r.ours.join(", "));
             if !r.others.is_empty() {
-                println!("\nWindows keeps your earlier choice of app for these, and doesn't let programs change that:");
-                for (ext, cmd) in &r.others {
-                    println!("  .{ext:<6} opens with {cmd}");
-                }
+                let list: Vec<String> = r.others.iter().map(|(ext, _)| format!(".{ext}")).collect();
+                println!("\nOther apps can open these too, so Windows leaves the choice to you and they are unchanged:\n  {}", list.join(" "));
                 if no_settings {
-                    println!("\nSwitch them in Settings > Apps > Default apps > rustimgmount.");
+                    println!("To switch one: right-click a file > Open with > Choose another app > rustimgmount > Always,\nor Settings > Apps > Default apps > rustimgmount.");
                 } else {
                     println!("\nOpening Settings > Default apps for rustimgmount, where you can switch them.");
                     winutil::open_default_apps_settings();
@@ -239,11 +240,11 @@ fn run(cli: Cli) -> Result<i32> {
         }
         Cmd::Unmount { target, everything } => unmount(&target, everything),
         Cmd::List { json } => list(json),
-        Cmd::Setup { no_menu, remove, purge, keep_files } => {
+        Cmd::Setup { no_menu, no_associate, remove, purge, keep_files } => {
             if remove {
                 setup_remove(purge, keep_files)
             } else {
-                setup(no_menu)
+                setup(no_menu, no_associate)
             }
         }
         Cmd::Autostart { state } => {
@@ -970,7 +971,7 @@ fn run_installed(exe: &Path, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-fn setup(no_menu: bool) -> Result<i32> {
+fn setup(no_menu: bool, no_associate: bool) -> Result<i32> {
     let here = std::env::current_exe()?;
     let src_dir = here.parent().ok_or_else(|| anyhow!("cannot locate the program folder"))?.to_owned();
     let dest = winutil::install_dir();
@@ -1002,7 +1003,11 @@ fn setup(no_menu: bool) -> Result<i32> {
         println!("Added to your PATH (open a new terminal to use `rustimgmount` anywhere).");
     }
     // Register from the installed copy so Explorer points there, not at this one.
-    run_installed(&exe, &["associate", "--no-settings"])?;
+    if no_associate {
+        run_installed(&exe, &["unassociate"])?;
+    } else {
+        run_installed(&exe, &["associate", "--no-settings"])?;
+    }
     if !no_menu {
         // Windows 11: one "rustimgmount" entry in the main right-click menu. It needs the
         // menu DLL and Developer Mode; where it can't be had, the classic entries under
