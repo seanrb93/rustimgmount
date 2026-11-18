@@ -1,0 +1,74 @@
+[package]
+name = "rustimgmount"
+version = "0.1.0"
+edition = "2021"
+description = "Mount common disk images (ISO, VHD/VHDX, IMG, BIN/CUE, NRG, MDF, VMDK, VDI, QCOW2, ...) on Windows"
+license = "MIT"
+
+[[bin]]
+name = "rustimgmount"
+path = "src/main.rs"
+
+# Windowless front end for Explorer (double-click, right-click menu).
+[[bin]]
+name = "rustimgmountw"
+path = "src/bin/rustimgmountw/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+# zlib-rs (also what the chd crate uses) lets QCOW2 clusters be deflated with the window size QEMU expects.
+flate2 = { version = "1", features = ["zlib-rs"] }
+chd = { version = "0.4", features = ["encode"] }
+lz4_flex = "0.14"
+lzma-rs = "0.3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+sevenz-rust2 = { version = "0.25", default-features = false, features = ["bzip2", "ppmd"] }
+bzip2 = "0.6"
+aes = "0.8"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+ripemd = "0.1"
+crc32fast = "1"
+# RAR extraction uses RARLAB's official UnRAR source (see LICENSE-UNRAR.txt).
+unrar = "0.5"
+ruzstd = "0.9"
+ewf = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[build-dependencies]
+winresource = "0.1"
+
+[dev-dependencies]
+# Only for examples/mkfixtures.rs (E01 and 7z test images).
+ewf-image = "0.6"
+sevenz-rust2 = { version = "0.25", features = ["compress"] }
+
+[dependencies.windows-sys]
+version = "0.59"
+features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_Storage_Vhd",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_Controls",
+    "Win32_UI_Controls_Dialogs",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Com",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
