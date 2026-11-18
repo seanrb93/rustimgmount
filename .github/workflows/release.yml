@@ -1,0 +1,42 @@
+name: Release
+
+# Pushing a tag like v0.1.0 builds and tests the project, then publishes a GitHub release
+# with the installer and a zip of the programs. The tag has to match the version in Cargo.toml.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check that the tag matches Cargo.toml
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          if ("v$version" -ne "${{ github.ref_name }}") { throw "Tag ${{ github.ref_name }} does not match version $version in Cargo.toml" }
+      - name: Update Rust
+        run: rustup update stable --no-self-update
+      - name: Install Inno Setup if the runner lacks it
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+      - name: Build, test and package
+        run: ./build.ps1 -Test -Package -Installer
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notes = @'
+          **Install:** download `rustimgmount-*-setup.exe` and run it. It installs for your user account only and needs no administrator rights. Windows may warn that the publisher is unknown, because the installer is not code-signed: choose "More info", then "Run anyway".
+
+          **Without the installer:** unpack the zip anywhere and run `rustimgmount.exe setup`.
+
+          Needs Windows 10 or 11, 64-bit. See the README for what it does and how to use it.
+          '@
+          Set-Content -Path notes.md -Value $notes -Encoding utf8
+          $files = Get-ChildItem dist -File | ForEach-Object { $_.FullName }
+          gh release create "${{ github.ref_name }}" $files --title "rustimgmount ${{ github.ref_name }}" --notes-file notes.md --generate-notes

@@ -4,8 +4,14 @@ A Windows disk image mounter, written in Rust. It handles everyday images (ISO, 
 virtual-machine disks and the formats emulators use (CHD, GDI, CSO, ECM, ...). Use it from the
 command line, by double-clicking images, or from its notification-area (tray) icon.
 
-**Quick start:** build it (see [Building](#building)), then run `rustimgmount setup` once. That installs it
-for your user account and sets up double-click mounting and the Start Menu entry for the tray app.
+**Install:** download the installer (`rustimgmount-...-setup.exe`) from the
+[latest release](https://github.com/seanrb93/rustimgmount/releases/latest) and run it. It installs for your
+user account only, needs no administrator rights, and sets up double-click mounting, the right-click menu
+and the Start Menu entry for the tray app. The installer isn't code-signed, so Windows may warn that the
+publisher is unknown: choose "More info", then "Run anyway". Uninstall it from Settings > Apps.
+
+Or get the zip from the same page, unpack it anywhere and run `rustimgmount setup`. Or build it yourself
+(see [Building](#building)) and run `target\release\rustimgmount.exe setup`.
 
 ```
 rustimgmount mount "Sonic Adventure (USA).chd"
@@ -209,9 +215,10 @@ archives are converted straight from the archive. For a playlist or multi-disc E
 converted.
 
 - **Recompressing.** An image can be converted to another flavour of its own format: a CHD to
-  `chd-zstd`, a VHD to `vhd-fixed`, a QCOW2 to `qcow2-compressed`. The result is named after the flavour,
-  for example `game (zstd).chd`.
-- **A bare `.bin` of raw sectors** converted to BIN/CUE just gets its missing `.cue` written next to it.
+  `chd-zstd`, a VHD to `vhd-fixed`, a QCOW2 to `qcow2-compressed`, or back to the standard one (`chd`,
+  `vhd`, `qcow2`). The result is named after the flavour, for example `game (zstd).chd`.
+- **A bare `.bin`** (raw sectors, or a plain image with a `.bin` name) converted to BIN/CUE just gets its
+  missing `.cue` written next to it.
 - **CHD output matches chdman.** For CD and GD-ROM images, the result has the same SHA-1 as the file
   `chdman createcd` makes from the same source, and `chdman verify` accepts it. Compression runs on all
   cores.
@@ -305,17 +312,27 @@ to the new location.
 ## Building
 
 ```
-cargo build --release --bins
-cargo build --release --manifest-path shellext/Cargo.toml --target-dir target/shellext   # Windows 11 menu DLL
-copy target\shellext
-elease
-ustimgmount_shell.dll target
-elease\                      # so `setup` finds it
+.\build.ps1
 ```
 
-This builds two programs in `target\release`, which belong together:
+That builds the two programs and the Windows 11 menu DLL and puts all three in `target\release`.
+`.\build.ps1 -Test` also runs the tests, `-Package` makes a zip in `dist\`, and `-Installer` makes the
+installer (needs [Inno Setup 6](https://jrsoftware.org/isinfo.php)). By hand, it is:
+
+```
+cargo build --release --bins
+cargo build --release --manifest-path shellext/Cargo.toml --target-dir target/shellext
+copy target\shellext\release\rustimgmount_shell.dll target\release\
+```
+
+Every push is built and tested on GitHub (`.github/workflows/ci.yml`). Pushing a tag such as `v0.1.0`
+that matches the version in `Cargo.toml` publishes a release with the installer and the zip
+(`.github/workflows/release.yml`).
+
+The programs in `target\release` belong together:
 - `rustimgmount.exe` is the command-line tool.
 - `rustimgmountw.exe` is the windowless companion for Explorer and the tray.
+- `rustimgmount_shell.dll` is the Windows 11 right-click menu entry.
 
 Neither has runtime dependencies. Building RAR support compiles RARLAB's UnRAR C++ code, which needs the
 Visual Studio C++ tools (the same ones Rust on Windows already uses).

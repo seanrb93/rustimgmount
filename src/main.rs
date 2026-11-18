@@ -85,6 +85,9 @@ enum Cmd {
         /// With --remove: also delete the records and cache in %LOCALAPPDATA%\rustimgmount.
         #[arg(long)]
         purge: bool,
+        /// With --remove: leave the program files in place (the installer's uninstaller deletes them).
+        #[arg(long, hide = true)]
+        keep_files: bool,
     },
     /// (internal) Turn starting the tray app at sign-in on or off.
     #[command(hide = true)]
@@ -236,9 +239,9 @@ fn run(cli: Cli) -> Result<i32> {
         }
         Cmd::Unmount { target, everything } => unmount(&target, everything),
         Cmd::List { json } => list(json),
-        Cmd::Setup { no_menu, remove, purge } => {
+        Cmd::Setup { no_menu, remove, purge, keep_files } => {
             if remove {
-                setup_remove(purge)
+                setup_remove(purge, keep_files)
             } else {
                 setup(no_menu)
             }
@@ -1038,7 +1041,7 @@ fn setup(no_menu: bool) -> Result<i32> {
     Ok(0)
 }
 
-fn setup_remove(purge: bool) -> Result<i32> {
+fn setup_remove(purge: bool, keep_files: bool) -> Result<i32> {
     let dest = winutil::install_dir();
     let installed = dest.join("rustimgmount.exe");
     let exe = if installed.exists() { installed } else { std::env::current_exe()? };
@@ -1059,7 +1062,9 @@ fn setup_remove(purge: bool) -> Result<i32> {
     }
     // A running program can't delete its own folder: let a short-lived helper do it.
     let here = std::env::current_exe()?;
-    if here.starts_with(&dest) || state::is_inside(&here, &dest) {
+    if keep_files {
+        // The installer put the files there and removes them itself.
+    } else if here.starts_with(&dest) || state::is_inside(&here, &dest) {
         let cmd = format!("ping -n 3 127.0.0.1 >nul & rmdir /s /q \"{}\"", dest.display());
         use std::os::windows::process::CommandExt;
         let _ = std::process::Command::new("cmd.exe").args(["/c", &cmd]).creation_flags(0x0800_0000).spawn();
@@ -1204,7 +1209,13 @@ fn convert_detected(
     // made fixed-size, ...) is a real conversion. It gets a name of its own.
     let same_format = formats::ext(&base) == target.ext();
     let flavour = match format.variant {
-        export::Variant::Plain => None,
+        // The standard flavour of a format that has others: converting back to it.
+        export::Variant::Plain => match target {
+            Target::Chd => Some("lzma"),
+            Target::Vhd => Some("dynamic"),
+            Target::Qcow2 => Some("uncompressed"),
+            _ => None,
+        },
         export::Variant::Zstd => Some("zstd"),
         export::Variant::Fixed => Some("fixed"),
         export::Variant::Compressed => Some("compressed"),

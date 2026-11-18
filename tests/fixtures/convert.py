@@ -153,7 +153,7 @@ checks = [
     (("more/audio/game.cue",), ["iso", "cso", "zso", "chd", "chd-zstd", "ccd"]),
     (("basic/disk.img",), ["vhd", "vhd-fixed", "vhdx", "vmdk", "vdi", "qcow2", "qcow2-compressed"]),
     (("emu/disc.gdi",), ["iso", "cso", "zso", "chd", "chd-zstd"]),
-    (("emu/gdrom.chd",), ["iso", "cso", "zso", "chd-zstd", "gdi"]),
+    (("emu/gdrom.chd",), ["iso", "cso", "zso", "chd", "chd-zstd", "gdi"]),
     (("basic/test.iso", "basic/disk.img"), []),
     (("basic/test.iso", "more/audio/game.cue"), ["cso", "zso", "chd", "chd-zstd", "ccd"]),
 ]
@@ -179,10 +179,19 @@ err = (lines[-1] if code else None) or (None if 'FILE "lone.bin" BINARY' in shee
 err = err or (None if read(out("lone.bin")) == read(src("basic/mode2.bin")) else "the .bin was changed")
 report("lone bin -> cue", err, "wrote only the cue sheet")
 chain("lone bin + new cue -> iso", [(out("lone.cue"), out("lone.iso"))], iso, out("lone.iso"))
-# A .bin that a new one would have to replace is never written over, even with --overwrite.
+# The same for a .bin that is a plain 2048-byte image.
 shutil.copy(src("basic/test.iso"), out("flat.bin"))
-refuses("never overwrites its source", (out("flat.bin"), "--to", "cue", "--overwrite"), ["part of the image being converted"])
-report("source untouched", None if read(out("flat.bin")) == iso else "the source file was changed")
+code, lines = convert(out("flat.bin"), "--to", "cue")
+sheet = read(out("flat.cue")).decode() if os.path.exists(out("flat.cue")) else ""
+err = (lines[-1] if code else None) or (None if 'FILE "flat.bin" BINARY' in sheet and "MODE1/2048" in sheet and read(out("flat.bin")) == iso else "unexpected: %r" % sheet)
+report("plain bin -> cue", err, "wrote only the cue sheet")
+chain("plain bin + new cue -> iso", [(out("flat.cue"), out("flat.iso"))], iso, out("flat.iso"))
+# A conversion never writes over the image it is reading, even with --overwrite: a CloneCD
+# image named by its .img would have that very .img rewritten.
+for e in ("ccd", "img", "sub"): shutil.copy(out("g." + e), out("own." + e))
+before = read(out("own.img"))
+refuses("never overwrites its source", (out("own.img"), "--to", "ccd", "--overwrite"), ["part of the image being converted"])
+report("source untouched", None if read(out("own.img")) == before else "the source file was changed")
 
 # Recompressing: a flavour of the same format gets its own name; the plain format is refused.
 for name, to, made, back in (("zs.chd", "chd-zstd", "zs (zstd).chd", None), ("d.vhd", "vhd-fixed", "d (fixed).vhd", disk), ("d.qcow2", "qcow2-compressed", "d (compressed).qcow2", disk)):
@@ -193,6 +202,11 @@ for name, to, made, back in (("zs.chd", "chd-zstd", "zs (zstd).chd", None), ("d.
         err = None if read(out(made + ".img")) == back else "contents changed"
     report("%s -> %s" % (name.split(".")[-1], to), err, "wrote " + made)
 chain("recompressed chd -> cue", [(out("zs (zstd).chd"), out("rz.cue"))], game_bin, out("rz.bin"))
+# ...and back to the standard flavour.
+for name, to, made in (("zs (zstd).chd", "chd", "zs (zstd) (lzma).chd"), ("d (fixed).vhd", "vhd", "d (fixed) (dynamic).vhd"), ("d (compressed).qcow2", "qcow2", "d (compressed) (uncompressed).qcow2")):
+    code, lines = convert(out(name), "--to", to, "--verify")
+    report("%s -> %s" % (name, to), lines[-1] if code else None if os.path.exists(out(made)) else "%s was not written" % made, "wrote " + made)
+report("back to dynamic vhd", None if os.path.getsize(out("d (fixed) (dynamic).vhd")) < os.path.getsize(out("d (fixed).vhd")) else "not smaller than the fixed one")
 left = [f for r, _, fs in os.walk(D) for f in fs if f.endswith(".partial")]
 report("no partial files", "left behind: %s" % left if left else None, "failed conversions leave nothing")
 

@@ -1,0 +1,29 @@
+name: Build and test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update Rust
+        run: rustup update stable --no-self-update
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            shellext -> ../target/shellext
+      - name: Build and test
+        run: ./build.ps1 -Test -Package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rustimgmount-windows-x64
+          path: dist/*.zip
+          if-no-files-found: error

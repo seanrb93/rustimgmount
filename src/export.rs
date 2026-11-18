@@ -153,7 +153,7 @@ pub fn choices(kind: Kind, ext: &str) -> Vec<&'static Format> {
     FORMATS
         .iter()
         // Not the image's own format, except as a different flavour of it (recompressing).
-        .filter(|f| f.target.ext() != ext || f.variant != Variant::Plain)
+        .filter(|f| f.target.ext() != ext || f.variant != Variant::Plain || matches!(f.target, Chd | Vhd | Qcow2))
         .filter(|f| match kind {
             Kind::Disc => matches!(f.target, Iso | Cso | Zso | Chd | Cue | Ccd),
             Kind::GdRom => matches!(f.target, Iso | Cso | Zso | Chd | Gdi),
@@ -457,7 +457,19 @@ fn lone_bin<'a>(image: &Path, l: &'a Layout, out: &Path) -> Option<&'a RawTrack>
     let base = formats::split_disc(image).0;
     let [t] = l.tracks.as_slice() else { return None };
     let len = std::fs::metadata(&base).ok()?.len();
-    let whole_file = t.base == 0 && t.stride == t.size && t.size >= 2336 && !t.audio && len == t.frames * t.size as u64;
+    let mut whole_file = t.base == 0 && t.stride == t.size && !t.audio && len == t.frames * t.size as u64;
+    if whole_file && t.size == 2048 {
+        // A plain 2048-byte image is sometimes presented rearranged (multi-session discs).
+        // Only when the track really reads the same as the file is the file itself the track.
+        let (mut file, mut a, mut b) = (FileSlice::whole(&base).ok()?, Vec::new(), vec![0u8; 2048]);
+        for sector in [0, 16, 17, t.frames / 2, t.frames.saturating_sub(1)] {
+            if sector < t.frames {
+                t.read(sector, 1, &mut a).ok()?;
+                file.read_at(sector * 2048, &mut b).ok()?;
+                whole_file &= a == b;
+            }
+        }
+    }
     (whole_file && crate::state::same_file(&base, &out.with_extension("bin"))).then_some(t)
 }
 
