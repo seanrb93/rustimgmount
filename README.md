@@ -1,26 +1,58 @@
 # rustimgmount
 
-A Windows disk image mounter, written in Rust. It handles everyday images (ISO, VHD, IMG) as well as
-virtual-machine disks and the formats emulators use (CHD, GDI, CSO, ECM, ...). Use it from the
-command line, by double-clicking images, or from its notification-area (tray) icon.
+rustimgmount mounts disk images as drives on Windows, and converts them between formats. It opens
+the everyday ones (ISO, VHD, IMG), the ones emulators use (CHD, CUE/BIN, GDI, CSO, CCD, ...) and
+virtual-machine disks (VMDK, VDI, QCOW2), about 45 file types in all. It is free, open source, and needs
+no administrator rights to install.
 
-**Install:** download the installer (`rustimgmount-...-setup.exe`) from the
-[latest release](https://github.com/seanrb93/rustimgmount/releases/latest) and run it. It installs for your
-user account only, needs no administrator rights, and sets up double-click mounting, the right-click menu
-and the Start Menu entry for the tray app. It has two options: **Mount disk images when I double-click
-them** (on by default; untick it to leave your file associations alone) and **Start rustimgmount's tray
-app when I sign in to Windows** (off by default; you can change it later with **Start with Windows** in the
-tray menu). The installer isn't code-signed, so Windows may warn that the
-publisher is unknown: choose "More info", then "Run anyway".
+![The file icons rustimgmount gives each format](assets/format_icons_preview.png)
 
-**Uninstall:** Settings > Apps > Installed apps > rustimgmount > Uninstall, or **Uninstall rustimgmount...**
-in the tray menu. Both work whether it was installed with the installer or with `rustimgmount setup`; from
-a terminal it's `rustimgmount setup --remove`. Uninstalling removes the program, the associations, the
-menus, the PATH entry and the shortcuts. Records and the conversion cache in `%LOCALAPPDATA%\rustimgmount`
-are kept unless you add `--purge`.
+## What you can do with it
 
-Or get the zip from the same page, unpack it anywhere and run `rustimgmount setup`. Or build it yourself
-(see [Building](#building)) and run `target\release\rustimgmount.exe setup`.
+- **Mount an image by double-clicking it.** It appears as a drive in Explorer, like a real disc or disk.
+  Eject it from Explorer when you're done.
+- **Hear a game disc's music.** A disc with CD audio tracks also gets a second drive holding the tracks
+  as WAV files with a cue sheet, ready for any audio player.
+- **Convert between formats** from the right-click menu: a CUE/BIN to a CHD, a CHD back to CUE/BIN, an
+  ISO to CSO, a VMDK to VHDX, and so on. Select many files to convert them in one go; it can check each
+  result against the original.
+- **Open images inside archives** (zip, 7z, rar, gz, ...) without unpacking them yourself.
+- **Use it your way:** double-click, the right-click menu, a tray icon, or the command line.
+
+## Install
+
+1. Download `rustimgmount-...-setup.exe` from the
+   [latest release](https://github.com/seanrb93/rustimgmount/releases/latest).
+2. Run it. Windows may say the publisher is unknown, because the installer isn't code-signed: choose
+   "More info", then "Run anyway".
+3. Pick the options you want:
+   - **Mount disk images when I double-click them** (on). Untick it to leave your file types alone.
+   - **Give each image format its own icon** (on). Untick it to use one rustimgmount icon for all.
+   - **Start rustimgmount's tray app when I sign in to Windows** (off).
+
+It installs for your user account only, into `%LOCALAPPDATA%\Programs\rustimgmount`, and adds itself to
+your PATH. It needs Windows 10 or 11, 64-bit.
+
+Prefer no installer? Get the zip from the same page, unpack it anywhere and run `rustimgmount setup`. Or
+build it yourself (see [Building](#building)) and run `target\release\rustimgmount.exe setup`.
+
+**If a file type doesn't mount on double-click:** another program on your PC also opens that type
+(Windows itself does for `.vhd`, `.vhdx` and `.img`), and Windows leaves the choice to you. Right-click a
+file of that type > Open with > Choose another app > rustimgmount > Always. You do this once per type.
+
+## Using it
+
+| To do this | Do this |
+|---|---|
+| Mount an image | Double-click it, or right-click > **rustimgmount** > **Mount** |
+| Unmount it | Right-click the drive > **Eject**, or right-click the image > **rustimgmount** > **Unmount** |
+| Convert an image | Right-click > **rustimgmount** > **Convert to ...**, or **More formats and options...** |
+| See what's mounted | Click the rustimgmount icon in the notification area (start it from the Start Menu) |
+
+On Windows 11 the **rustimgmount** entry is in the main right-click menu when Developer Mode is on, and
+under "Show more options" otherwise (see [the right-click menu](#usage) for why).
+
+From a terminal:
 
 ```
 rustimgmount mount "Sonic Adventure (USA).chd"
@@ -28,7 +60,20 @@ Format: CHD (CD/DVD)
 Converting to ISO: 100%  (1.1 GiB / 1.1 GiB, 1.6 GiB/s)
 Mounted C:\Games\Sonic Adventure (USA).chd (read-only)
   -> E:\
+
+rustimgmount convert "game.cue" --to chd --verify
+rustimgmount unmount all
 ```
+
+## Uninstall
+
+Settings > Apps > Installed apps > rustimgmount > Uninstall, or **Uninstall rustimgmount...** in the tray
+menu. Both work whether it was installed with the installer or with `rustimgmount setup`; from a terminal
+it's `rustimgmount setup --remove`. Uninstalling removes the program, the associations, the menus, the
+PATH entry and the shortcuts. Records and the conversion cache in `%LOCALAPPDATA%\rustimgmount` are kept
+unless you add `--purge`.
+
+The rest of this page is the reference: every format, how it works, every command and option.
 
 ## Supported formats
 
@@ -152,7 +197,7 @@ rustimgmount uninstall
 rustimgmount associate                  # double-clicking a supported image mounts it and opens the drive
 rustimgmount unassociate                # undo, restoring your previous defaults
 rustimgmount audio <image> [folder]     # save a disc's CD audio tracks as WAV files
-rustimgmount setup [--no-menu] [--no-associate]   # install for your user account (see below)
+rustimgmount setup [--no-menu] [--no-associate] [--plain-icons]   # install for your user account (see below)
 rustimgmount setup --remove [--purge]   # undo setup (--purge also deletes records and cache)
 ```
 
@@ -168,7 +213,9 @@ Run it again after rebuilding to update the installed copy. `setup --remove` und
 **File icons.** Each format gets its own icon and description in Explorer: a disc for optical images
 (blue label) and emulator formats (purple), a hard drive for virtual-machine disks (green), a plain file
 for raw and forensic images (slate) and a floppy disk for floppy and retro-computer formats (teal), each
-with the format's name on the label. They show for the file types rustimgmount opens.
+with the format's name on the label. They show for the file types rustimgmount opens. To have one
+rustimgmount icon for every type, untick the option in the installer or run `rustimgmount setup
+--plain-icons`.
 
 **Types that another app can open too.** When another program on the PC also handles a type (Windows itself
 for `.vhd`, `.vhdx` and `.img`; an archiver or another mounting tool for others), Windows does not let any
@@ -197,7 +244,9 @@ dialog; files whose extension is used for both discs and disks (`.img`, `.raw`, 
 that entry, because the dialog looks inside the file first. (With the classic menu, the same choices are
 under **Convert to**.)
 
-**The Convert dialog** looks inside the image first and lists only the formats that fit it. There you can also:
+**The Convert dialog** looks inside the image first and lists only the formats that fit it. It opens on
+the format and options you used last time (except moving originals to the Recycle Bin, which is asked for
+each time). There you can also:
 - choose another folder for the result,
 - have the new image checked against the original when it's done,
 - have the original moved to the Recycle Bin once that check has passed,
@@ -222,6 +271,7 @@ rustimgmount convert <image> --to <format> [output] [--out-dir FOLDER] [--verify
 | CSO | `cso` | The same, compressed (PSP and PS2 emulators and loaders) |
 | ZSO | `zso` | The same, compressed with LZ4: bigger than CSO, quicker to read |
 | CHD | `chd` | The whole disc: every track, audio included, compressed. Also DVDs and hard disks |
+| CHD, DVD type | `chd-dvd` | A single-track 2048-byte image (ISO, CSO) as the DVD kind of CHD, whatever its size. PSP and PS2 emulators expect this kind; without it, only images too big for a CD are written this way |
 | CHD, Zstandard | `chd-zstd` | The same with Zstandard instead of LZMA: a little bigger, much quicker for emulators to read. Older emulators can't open it |
 | BIN/CUE | `cue` | The whole disc: every track, uncompressed, with a cue sheet |
 | CCD/IMG/SUB | `ccd` | The whole disc in CloneCD's format, including subchannel data |

@@ -44,6 +44,9 @@ pub enum Variant {
     Plain,
     /// CHD compressed with Zstandard (bigger than the default LZMA, much faster to read).
     Zstd,
+    /// CHD of the DVD kind (2048-byte sectors, as `chdman createdvd` makes) whatever the
+    /// image's size. Without this, only images too big for a CD become the DVD kind.
+    Dvd,
     /// VHD with all its space allocated up front.
     Fixed,
     /// QCOW2 with deflated clusters.
@@ -62,12 +65,13 @@ const fn f(id: &'static str, target: Target, variant: Variant, label: &'static s
     Format { id, target, variant, label }
 }
 
-pub const FORMATS: [Format; 16] = [
+pub const FORMATS: [Format; 17] = [
     f("iso", Target::Iso, Variant::Plain, "ISO (data only)"),
     f("cso", Target::Cso, Variant::Plain, "CSO (compressed ISO)"),
     f("zso", Target::Zso, Variant::Plain, "ZSO (compressed ISO, loads faster)"),
     f("chd", Target::Chd, Variant::Plain, "CHD"),
     f("chd-zstd", Target::Chd, Variant::Zstd, "CHD (Zstandard, loads faster)"),
+    f("chd-dvd", Target::Chd, Variant::Dvd, "CHD (DVD type, for PSP and PS2 ISOs)"),
     f("cue", Target::Cue, Variant::Plain, "BIN/CUE"),
     f("ccd", Target::Ccd, Variant::Plain, "CCD/IMG/SUB (CloneCD)"),
     f("gdi", Target::Gdi, Variant::Plain, "GDI (Dreamcast)"),
@@ -154,6 +158,8 @@ pub fn choices(kind: Kind, ext: &str) -> Vec<&'static Format> {
         .iter()
         // Not the image's own format, except as a different flavour of it (recompressing).
         .filter(|f| f.target.ext() != ext || f.variant != Variant::Plain || matches!(f.target, Chd | Vhd | Qcow2))
+        // The DVD kind of CHD holds a plain disc image, never a GD-ROM or a disk.
+        .filter(|f| f.variant != Variant::Dvd || matches!(kind, Kind::Disc | Kind::Unknown))
         .filter(|f| match kind {
             Kind::Disc => matches!(f.target, Iso | Cso | Zso | Chd | Cue | Ccd),
             Kind::GdRom => matches!(f.target, Iso | Cso | Zso | Chd | Gdi),
@@ -374,8 +380,9 @@ pub fn run(image: &Path, det: Result<Detected>, format: &Format, out: &Path, opt
             write_raw(src.as_mut(), &job.add(out)?, "Converting to ISO", None)?;
         }
         (Content::Disc(src), Cso | Zso) => write_packed(src.as_mut(), &job.add(out)?, target == Zso)?,
+        (Content::Disk(_), Chd) if format.variant == Variant::Dvd => bail!("the DVD type of CHD is for disc images; convert this disk to chd"),
         (Content::Disk(src), Chd) => write_chd_disk(src.as_mut(), &job.add(out)?, zstd)?,
-        (Content::Tracks(l), Chd) => write_chd_cd(l, &job.add(out)?, zstd)?,
+        (Content::Tracks(l), Chd) => write_chd_cd(l, &job.add(out)?, zstd, format.variant == Variant::Dvd)?,
         (Content::Tracks(l), Cue | Gdi | Ccd) => {
             if l.gd && target != Gdi {
                 bail!("this is a Dreamcast GD-ROM, which a {} can't describe; convert it to gdi or chd", if target == Cue { "cue sheet" } else { "CloneCD image" });
@@ -764,9 +771,12 @@ const CD_MAX_SECTORS: u64 = 99 * 60 * 75;
 const CHD_FRAME: usize = 2448;
 
 /// A CD-ROM, GD-ROM or DVD CHD, as `chdman createcd` / `createdvd` make.
-fn write_chd_cd(l: &Layout, out: &Path, zstd: bool) -> Result<()> {
+fn write_chd_cd(l: &Layout, out: &Path, zstd: bool, dvd: bool) -> Result<()> {
+    if dvd && !matches!(l.tracks.as_slice(), [t] if t.size == 2048) {
+        bail!("the DVD type of CHD holds a single track of 2048-byte sectors (an ISO, CSO or similar); this image has raw CD sectors or several tracks, so convert it to chd");
+    }
     if let [t] = l.tracks.as_slice() {
-        if t.size == 2048 && t.frames > CD_MAX_SECTORS {
+        if t.size == 2048 && (dvd || t.frames > CD_MAX_SECTORS) {
             let total = t.frames * 2048;
             let mut opts = ChdWriteOptions::dvd().logical_bytes(total);
             if zstd {

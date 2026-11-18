@@ -609,10 +609,26 @@ pub fn assoc_exts() -> Vec<&'static str> {
     SHELL_EXTS.iter().copied().filter(|e| *e != "m3u").collect()
 }
 
+/// The user's choice between one icon per format (the default) and the rustimgmount icon
+/// for every image type. Remembered, so that re-registering later keeps it.
+pub fn set_plain_icons(plain: bool) -> Result<()> {
+    if plain {
+        reg_set(HKEY_CURRENT_USER, APP_KEY, Some("PlainIcons"), "1")
+    } else {
+        reg_delete_value(HKEY_CURRENT_USER, APP_KEY, "PlainIcons");
+        Ok(())
+    }
+}
+
+fn plain_icons() -> bool {
+    reg_get_value(HKEY_CURRENT_USER, APP_KEY, Some("PlainIcons")).as_deref() == Some("1")
+}
+
 fn register_progid() -> Result<()> {
     let exe = std::env::current_exe()?;
     let exe_s = exe.to_string_lossy();
     reg_delete_tree(HKEY_CURRENT_USER, &format!(r"Software\Classes\{OLD_PROGID}"));
+    let plain = plain_icons();
     let open = ui_command("mount")?;
     // Show up in Settings > Default apps, so the user can pick it where Windows requires that.
     let caps = format!(r"{APP_KEY}\Capabilities");
@@ -625,8 +641,9 @@ fn register_progid() -> Result<()> {
         let name = type_name(ext);
         reg_set(HKEY_CURRENT_USER, &base, None, &name)?;
         reg_set(HKEY_CURRENT_USER, &base, Some("FriendlyTypeName"), &name)?;
-        // The format's own icon, or the program's if there is none for it.
-        let icon = match FORMAT_ICONS.iter().find(|(e, _)| *e == ext) {
+        // The format's own icon; the program's if there is none for it, or if the user
+        // asked for one icon for everything.
+        let icon = match FORMAT_ICONS.iter().find(|(e, _)| *e == ext).filter(|_| !plain) {
             Some((_, res)) => format!("{exe_s},-{res}"),
             None => format!("{exe_s},0"),
         };

@@ -447,6 +447,37 @@ pub unsafe fn app_icon() -> HICON {
 
 // ---------------------------------------------------------------- the dialog
 
+/// What the Convert dialog was last set to, so it opens the same way next time.
+/// "Move the original to the Recycle Bin" is deliberately not remembered: deleting
+/// originals should be asked for each time.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Prefs {
+    /// Formats chosen before, most recent first (discs and disks have different lists).
+    #[serde(default)]
+    formats: Vec<String>,
+    #[serde(default)]
+    out_dir: Option<String>,
+    #[serde(default)]
+    verify: bool,
+    #[serde(default)]
+    overwrite: bool,
+}
+
+impl Prefs {
+    fn file() -> PathBuf {
+        app_dir().join("convert-dialog.json")
+    }
+    fn load() -> Prefs {
+        std::fs::read(Self::file()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    }
+    fn save(&self) {
+        let _ = std::fs::create_dir_all(app_dir());
+        if let Ok(json) = serde_json::to_vec_pretty(self) {
+            let _ = std::fs::write(Self::file(), json);
+        }
+    }
+}
+
 struct Choice {
     id: String,
     label: String,
@@ -620,7 +651,15 @@ fn dialog(files: &[String]) -> Vec<Job> {
             SendMessageW(combo, CB_ADDSTRING, 0, l.as_ptr() as isize);
         }
         // Start on CHD for discs (the usual reason to convert), else the first choice.
-        let first = choices.iter().position(|c| c.id == "chd").unwrap_or(0);
+        // Start on the format used last time that this image can be converted to; failing
+        // that, CHD for discs (the usual reason to convert), else the first choice.
+        let mut prefs = Prefs::load();
+        let first = prefs
+            .formats
+            .iter()
+            .find_map(|id| choices.iter().position(|c| &c.id == id))
+            .or_else(|| choices.iter().position(|c| c.id == "chd"))
+            .unwrap_or(0);
         SendMessageW(combo, CB_SETCURSEL, first, 0);
         add("STATIC", "Save in:", 0, 16, 86, 90, 20, -1);
         add("EDIT", "The same folder as each image", (ES_READONLY as u32) | (ES_AUTOHSCROLL as u32) | WS_BORDER, 110, 82, 334, 23, ID_FOLDER);
@@ -632,6 +671,15 @@ fn dialog(files: &[String]) -> Vec<Job> {
         add("BUTTON", "Replace files that already exist", (BS_AUTOCHECKBOX as u32) | WS_TABSTOP, 16, 200, 428, 20, ID_OVERWRITE);
         add("BUTTON", "Convert", (BS_DEFPUSHBUTTON as u32) | WS_TABSTOP, 258, 226, 90, 26, 1);
         add("BUTTON", "Cancel", WS_TABSTOP, 354, 226, 90, 26, 2);
+        if let Some(dir) = prefs.out_dir.clone().filter(|d| Path::new(d).is_dir()) {
+            let w = wide(&dir);
+            SetWindowTextW(GetDlgItem(hwnd, ID_FOLDER), w.as_ptr());
+            DIALOG.out_dir = Some(dir);
+            EnableWindow(same, 1);
+        }
+        for (id, on) in [(ID_VERIFY, prefs.verify), (ID_OVERWRITE, prefs.overwrite)] {
+            SendMessageW(GetDlgItem(hwnd, id), BM_SETCHECK, on as usize, 0);
+        }
         ShowWindow(hwnd, SW_SHOW);
         SetForegroundWindow(hwnd);
         SetFocus(combo);
@@ -646,6 +694,14 @@ fn dialog(files: &[String]) -> Vec<Job> {
         DeleteObject(font);
         let Some((sel, verify, delete, overwrite)) = DIALOG.result else { return Vec::new() };
         let Some(choice) = choices.get(sel) else { return Vec::new() };
+        prefs.formats.retain(|id| id != &choice.id);
+        prefs.formats.insert(0, choice.id.clone());
+        prefs.formats.truncate(8);
+        // (Ticking "move the original" forces the check on; that isn't the user's own setting.)
+        prefs.verify = verify && !delete || prefs.verify && delete;
+        prefs.overwrite = overwrite;
+        prefs.out_dir = DIALOG.out_dir.clone();
+        prefs.save();
         files
             .iter()
             .map(|f| Job { image: f.clone(), to: choice.id.clone(), out_dir: DIALOG.out_dir.clone(), verify: verify || delete, delete, overwrite })

@@ -82,6 +82,9 @@ enum Cmd {
         /// Don't make double-clicking images mount them (and undo it if an earlier setup did).
         #[arg(long)]
         no_associate: bool,
+        /// Give every image type the rustimgmount icon, not one icon per format.
+        #[arg(long)]
+        plain_icons: bool,
         /// Undo setup: remove associations, menu, PATH entry, shortcut and installed files.
         #[arg(long)]
         remove: bool,
@@ -102,7 +105,7 @@ enum Cmd {
         image: PathBuf,
         /// File to write (default: next to the image, with the new format's extension).
         output: Option<PathBuf>,
-        /// Format to convert to. Discs: iso, cso, zso (data only), chd, chd-zstd, cue (BIN/CUE),
+        /// Format to convert to. Discs: iso, cso, zso (data only), chd, chd-zstd, chd-dvd, cue (BIN/CUE),
         /// ccd (CloneCD), gdi (Dreamcast). Disks: vhd, vhd-fixed, vhdx, img (raw), vmdk, vdi,
         /// qcow2, qcow2-compressed, chd.
         #[arg(long, value_name = "FORMAT")]
@@ -140,6 +143,12 @@ enum Cmd {
         /// Don't open Settings > Default apps for extensions Windows won't let us change.
         #[arg(long, hide = true)]
         no_settings: bool,
+        /// Give every image type the rustimgmount icon, not one icon per format.
+        #[arg(long, conflicts_with = "format_icons")]
+        plain_icons: bool,
+        /// Give each format its own icon (the default; undoes an earlier --plain-icons).
+        #[arg(long)]
+        format_icons: bool,
     },
     /// Undo `associate`, restoring the previous per-user defaults.
     Unassociate,
@@ -217,7 +226,11 @@ fn run(cli: Cli) -> Result<i32> {
             }
             Ok(code)
         }
-        Cmd::Associate { no_settings } => {
+        Cmd::Associate { no_settings, plain_icons, format_icons } => {
+            // Without either flag the earlier choice stands.
+            if plain_icons || format_icons {
+                winutil::set_plain_icons(plain_icons)?;
+            }
             let r = winutil::associate()?;
             println!("Double-clicking these now mounts them: {}", r.ours.join(", "));
             if !r.others.is_empty() {
@@ -240,11 +253,11 @@ fn run(cli: Cli) -> Result<i32> {
         }
         Cmd::Unmount { target, everything } => unmount(&target, everything),
         Cmd::List { json } => list(json),
-        Cmd::Setup { no_menu, no_associate, remove, purge, keep_files } => {
+        Cmd::Setup { no_menu, no_associate, plain_icons, remove, purge, keep_files } => {
             if remove {
                 setup_remove(purge, keep_files)
             } else {
-                setup(no_menu, no_associate)
+                setup(no_menu, no_associate, plain_icons)
             }
         }
         Cmd::Autostart { state } => {
@@ -971,7 +984,7 @@ fn run_installed(exe: &Path, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-fn setup(no_menu: bool, no_associate: bool) -> Result<i32> {
+fn setup(no_menu: bool, no_associate: bool, plain_icons: bool) -> Result<i32> {
     let here = std::env::current_exe()?;
     let src_dir = here.parent().ok_or_else(|| anyhow!("cannot locate the program folder"))?.to_owned();
     let dest = winutil::install_dir();
@@ -1006,7 +1019,7 @@ fn setup(no_menu: bool, no_associate: bool) -> Result<i32> {
     if no_associate {
         run_installed(&exe, &["unassociate"])?;
     } else {
-        run_installed(&exe, &["associate", "--no-settings"])?;
+        run_installed(&exe, &["associate", "--no-settings", if plain_icons { "--plain-icons" } else { "--format-icons" }])?;
     }
     if !no_menu {
         // Windows 11: one "rustimgmount" entry in the main right-click menu. It needs the
@@ -1224,6 +1237,7 @@ fn convert_detected(
             _ => None,
         },
         export::Variant::Zstd => Some("zstd"),
+        export::Variant::Dvd => Some("dvd"),
         export::Variant::Fixed => Some("fixed"),
         export::Variant::Compressed => Some("compressed"),
     };

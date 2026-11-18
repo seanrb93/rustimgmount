@@ -38,6 +38,7 @@ CloseApplications=no
 
 [Tasks]
 Name: "associate"; Description: "Mount disk images when I double-click them (associate the image file types with rustimgmount)"
+Name: "associate\icons"; Description: "Give each image format its own icon (untick to use the rustimgmount icon for all of them)"
 ; Off unless ticked. The same setting is "Start with Windows" in the tray app's menu.
 Name: "autostart"; Description: "Start rustimgmount's tray app when I sign in to Windows"; Flags: unchecked
 
@@ -50,8 +51,7 @@ Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE-UNRAR.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Run]
-Filename: "{app}\rustimgmount.exe"; Parameters: "setup"; Flags: runhidden; StatusMsg: "Setting up file associations and the right-click menu..."; Tasks: associate
-Filename: "{app}\rustimgmount.exe"; Parameters: "setup --no-associate"; Flags: runhidden; StatusMsg: "Setting up the right-click menu..."; Tasks: not associate
+Filename: "{app}\rustimgmount.exe"; Parameters: "{code:SetupParams}"; Flags: runhidden; StatusMsg: "Setting up file associations and the right-click menu..."
 Filename: "{app}\rustimgmount.exe"; Parameters: "autostart on"; Flags: runhidden; Tasks: autostart
 Filename: "{app}\rustimgmountw.exe"; Parameters: "--tray"; Description: "Start the tray app now"; Flags: postinstall nowait skipifsilent
 ; Windows leaves some types (.vhd, .img, ...) with the app that had them until the user picks.
@@ -70,6 +70,16 @@ Type: filesandordirs; Name: "{app}\microsoft.system.package.metadata"
 Type: files; Name: "{app}\*.old"
 
 [Code]
+// What `rustimgmount setup` is told, from the boxes ticked on the options page.
+function SetupParams(Param: String): String;
+begin
+  Result := 'setup';
+  if not WizardIsTaskSelected('associate') then
+    Result := Result + ' --no-associate'
+  else if not WizardIsTaskSelected('associate\icons') then
+    Result := Result + ' --plain-icons';
+end;
+
 // A running tray app keeps rustimgmountw.exe open, which would block replacing it.
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var

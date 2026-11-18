@@ -144,18 +144,29 @@ for f, args in (("chd", (src("more/audio/game.cue"), out("bad.chd"))), ("vdi", (
 code, lines = convert(src("basic/test.iso"), out("t.cso"), "--overwrite", "--verify")
 report("--overwrite", None if code == 0 and "Verified" in " ".join(lines) else "failed: %r" % lines[-1:])
 
+# The DVD kind of CHD for a small image (what emulators want for PSP and PS2 discs).
+code, lines = convert(src("basic/test.iso"), "--to", "chd-dvd", out("dvd.chd"), "--verify")
+err = lines[-1] if code else None
+if not err:
+    convert(out("dvd.chd"), out("dvd.iso"))
+    err = None if b"DVD " in read(out("dvd.chd")) and b"CHT2" not in read(out("dvd.chd")) else "not a DVD-type CHD"
+    err = err or (None if read(out("dvd.iso")) == iso else "contents changed")
+report("iso -> chd-dvd -> iso", err, "DVD-type CHD, identical after the round trip")
+code, lines = convert(src("more/audio/game.cue"), "--to", "chd-dvd", out("no.chd"))
+report("multi-track -> chd-dvd", None if code and "DVD type" in " ".join(lines) and not os.path.exists(out("no.chd")) else "expected a refusal, got %r" % lines[-1:], "refused: it has several tracks")
+
 # What the Convert dialog offers.
 def formats(*names):
     r = subprocess.run([EXE, "formats", *[src(n) for n in names]], capture_output=True, text=True)
     import json
     return [f["id"] for f in json.loads(r.stdout)["formats"]]
 checks = [
-    (("more/audio/game.cue",), ["iso", "cso", "zso", "chd", "chd-zstd", "ccd"]),
+    (("more/audio/game.cue",), ["iso", "cso", "zso", "chd", "chd-zstd", "chd-dvd", "ccd"]),
     (("basic/disk.img",), ["vhd", "vhd-fixed", "vhdx", "vmdk", "vdi", "qcow2", "qcow2-compressed"]),
     (("emu/disc.gdi",), ["iso", "cso", "zso", "chd", "chd-zstd"]),
     (("emu/gdrom.chd",), ["iso", "cso", "zso", "chd", "chd-zstd", "gdi"]),
     (("basic/test.iso", "basic/disk.img"), []),
-    (("basic/test.iso", "more/audio/game.cue"), ["cso", "zso", "chd", "chd-zstd", "ccd"]),
+    (("basic/test.iso", "more/audio/game.cue"), ["cso", "zso", "chd", "chd-zstd", "chd-dvd", "ccd"]),
 ]
 bad_lists = ["%s -> %s" % (n, formats(*n)) for n, want in checks if formats(*n) != want]
 report("formats offered", "; ".join(bad_lists) or None, "discs, disks, GD-ROMs and mixed selections")
