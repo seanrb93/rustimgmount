@@ -44,8 +44,8 @@ pub enum Variant {
     Plain,
     /// CHD compressed with Zstandard (bigger than the default LZMA, much faster to read).
     Zstd,
-    /// CHD of the DVD kind (2048-byte sectors, as `chdman createdvd` makes) whatever the
-    /// image's size. Without this, only images too big for a CD become the DVD kind.
+    /// CHD of the DVD kind (2048-byte sectors, as `chdman createdvd` makes), forced.
+    /// Plain "chd" picks the kind by itself (see `is_dvd`); this is only an override.
     Dvd,
     /// VHD with all its space allocated up front.
     Fixed,
@@ -65,13 +65,12 @@ const fn f(id: &'static str, target: Target, variant: Variant, label: &'static s
     Format { id, target, variant, label }
 }
 
-pub const FORMATS: [Format; 17] = [
+pub const FORMATS: [Format; 16] = [
     f("iso", Target::Iso, Variant::Plain, "ISO (data only)"),
     f("cso", Target::Cso, Variant::Plain, "CSO (compressed ISO)"),
     f("zso", Target::Zso, Variant::Plain, "ZSO (compressed ISO, loads faster)"),
     f("chd", Target::Chd, Variant::Plain, "CHD"),
     f("chd-zstd", Target::Chd, Variant::Zstd, "CHD (Zstandard, loads faster)"),
-    f("chd-dvd", Target::Chd, Variant::Dvd, "CHD (DVD type, for PSP and PS2 ISOs)"),
     f("cue", Target::Cue, Variant::Plain, "BIN/CUE"),
     f("ccd", Target::Ccd, Variant::Plain, "CCD/IMG/SUB (CloneCD)"),
     f("gdi", Target::Gdi, Variant::Plain, "GDI (Dreamcast)"),
@@ -85,6 +84,9 @@ pub const FORMATS: [Format; 17] = [
     f("qcow2-compressed", Target::Qcow2, Variant::Compressed, "QCOW2 (compressed)"),
 ];
 
+/// Accepted by `--to` but not listed anywhere: plain "chd" already chooses the kind.
+const CHD_DVD: Format = f("chd-dvd", Target::Chd, Variant::Dvd, "CHD (DVD type)");
+
 impl Format {
     pub fn parse(s: &str) -> Option<&'static Format> {
         let s = s.trim().trim_start_matches('.').to_ascii_lowercase();
@@ -95,6 +97,9 @@ impl Format {
             "clonecd" => "ccd",
             other => other,
         };
+        if s == CHD_DVD.id {
+            return Some(&CHD_DVD);
+        }
         FORMATS.iter().find(|f| f.id == s)
     }
 
@@ -158,8 +163,6 @@ pub fn choices(kind: Kind, ext: &str) -> Vec<&'static Format> {
         .iter()
         // Not the image's own format, except as a different flavour of it (recompressing).
         .filter(|f| f.target.ext() != ext || f.variant != Variant::Plain || matches!(f.target, Chd | Vhd | Qcow2))
-        // The DVD kind of CHD holds a plain disc image, never a GD-ROM or a disk.
-        .filter(|f| f.variant != Variant::Dvd || matches!(kind, Kind::Disc | Kind::Unknown))
         .filter(|f| match kind {
             Kind::Disc => matches!(f.target, Iso | Cso | Zso | Chd | Cue | Ccd),
             Kind::GdRom => matches!(f.target, Iso | Cso | Zso | Chd | Gdi),
@@ -770,13 +773,39 @@ fn write_chd_disk(src: &mut dyn Source, out: &Path, zstd: bool) -> Result<()> {
 const CD_MAX_SECTORS: u64 = 99 * 60 * 75;
 const CHD_FRAME: usize = 2448;
 
+/// Should a single-track 2048-byte image become the DVD kind of CHD? Emulators for
+/// DVD- and UMD-based consoles (PS2, PSP) expect that kind; CD-based ones the CD kind.
+/// It is one if it is too big for a CD, has a UDF file system (DVDs do, CD-ROMs almost
+/// never), or says it is a PSP disc.
+fn is_dvd(t: &RawTrack) -> bool {
+    if t.frames > CD_MAX_SECTORS {
+        return true;
+    }
+    let mut sector = Vec::new();
+    // The volume descriptors, then (on UDF discs) the "BEA01 / NSR0x / TEA01" markers.
+    for lba in 16..32.min(t.frames) {
+        if t.read(lba, 1, &mut sector).is_err() {
+            return false;
+        }
+        let id = &sector[1..6];
+        if id == b"BEA01" || id == b"NSR02" || id == b"NSR03" {
+            return true;
+        }
+        // Primary volume descriptor: PSP discs name their system "PSP GAME".
+        if sector[0] == 1 && id == b"CD001" && sector[8..40].windows(8).any(|w| w == b"PSP GAME") {
+            return true;
+        }
+    }
+    false
+}
+
 /// A CD-ROM, GD-ROM or DVD CHD, as `chdman createcd` / `createdvd` make.
 fn write_chd_cd(l: &Layout, out: &Path, zstd: bool, dvd: bool) -> Result<()> {
     if dvd && !matches!(l.tracks.as_slice(), [t] if t.size == 2048) {
         bail!("the DVD type of CHD holds a single track of 2048-byte sectors (an ISO, CSO or similar); this image has raw CD sectors or several tracks, so convert it to chd");
     }
     if let [t] = l.tracks.as_slice() {
-        if t.size == 2048 && (dvd || t.frames > CD_MAX_SECTORS) {
+        if t.size == 2048 && (dvd || is_dvd(t)) {
             let total = t.frames * 2048;
             let mut opts = ChdWriteOptions::dvd().logical_bytes(total);
             if zstd {

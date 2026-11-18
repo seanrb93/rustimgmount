@@ -271,7 +271,6 @@ rustimgmount convert <image> --to <format> [output] [--out-dir FOLDER] [--verify
 | CSO | `cso` | The same, compressed (PSP and PS2 emulators and loaders) |
 | ZSO | `zso` | The same, compressed with LZ4: bigger than CSO, quicker to read |
 | CHD | `chd` | The whole disc: every track, audio included, compressed. Also DVDs and hard disks |
-| CHD, DVD type | `chd-dvd` | A single-track 2048-byte image (ISO, CSO) as the DVD kind of CHD, whatever its size. PSP and PS2 emulators expect this kind; without it, only images too big for a CD are written this way |
 | CHD, Zstandard | `chd-zstd` | The same with Zstandard instead of LZMA: a little bigger, much quicker for emulators to read. Older emulators can't open it |
 | BIN/CUE | `cue` | The whole disc: every track, uncompressed, with a cue sheet |
 | CCD/IMG/SUB | `ccd` | The whole disc in CloneCD's format, including subchannel data |
@@ -293,6 +292,10 @@ converted.
   `vhd`, `qcow2`). The result is named after the flavour, for example `game (zstd).chd`.
 - **A bare `.bin`** (raw sectors, or a plain image with a `.bin` name) converted to BIN/CUE just gets its
   missing `.cue` written next to it.
+- **CD or DVD kind of CHD, chosen for you.** CHD comes in a CD kind and a DVD kind, and emulators care
+  which one they get. An image with several tracks or raw CD sectors becomes the CD kind. A plain
+  2048-byte image (ISO, CSO...) becomes the DVD kind if it is too big for a CD, has a DVD file system
+  (UDF), or is a PSP disc; otherwise the CD kind. `--to chd-dvd` forces the DVD kind.
 - **CHD output matches chdman.** For CD and GD-ROM images, the result has the same SHA-1 as the file
   `chdman createcd` makes from the same source, and `chdman verify` accepts it. Compression runs on all
   cores.

@@ -105,7 +105,7 @@ enum Cmd {
         image: PathBuf,
         /// File to write (default: next to the image, with the new format's extension).
         output: Option<PathBuf>,
-        /// Format to convert to. Discs: iso, cso, zso (data only), chd, chd-zstd, chd-dvd, cue (BIN/CUE),
+        /// Format to convert to. Discs: iso, cso, zso (data only), chd, chd-zstd, cue (BIN/CUE),
         /// ccd (CloneCD), gdi (Dreamcast). Disks: vhd, vhd-fixed, vhdx, img (raw), vmdk, vdi,
         /// qcow2, qcow2-compressed, chd.
         #[arg(long, value_name = "FORMAT")]

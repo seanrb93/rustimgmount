@@ -144,7 +144,29 @@ for f, args in (("chd", (src("more/audio/game.cue"), out("bad.chd"))), ("vdi", (
 code, lines = convert(src("basic/test.iso"), out("t.cso"), "--overwrite", "--verify")
 report("--overwrite", None if code == 0 and "Verified" in " ".join(lines) else "failed: %r" % lines[-1:])
 
-# The DVD kind of CHD for a small image (what emulators want for PSP and PS2 discs).
+# Plain "chd" picks the kind of CHD by itself: the CD kind for a CD image, the DVD kind
+# (what PSP and PS2 emulators expect) for a PSP disc or anything with a DVD file system.
+def chd_kind(path):
+    b = read(path)
+    return "dvd" if b"DVD " in b and b"CHT2" not in b else "cd" if b"CHT2" in b else "?"
+psp = bytearray(iso); psp[16 * 2048 + 8:16 * 2048 + 16] = b"PSP GAME"
+udf = bytearray(iso); udf[18 * 2048:18 * 2048 + 7] = b"\0NSR02\x01"   # (over the path table, which nothing here reads)
+open(out("psp.iso"), "wb").write(psp); open(out("udf.iso"), "wb").write(udf)
+for name, data, want in (("psp.iso", bytes(psp), "dvd"), ("udf.iso", bytes(udf), "dvd"), ("t_cso.iso", iso, "cd")):
+    stem = name[:-4] + "_auto"
+    code, lines = convert(out(name), "--to", "chd", out(stem + ".chd"), "--verify")
+    err = lines[-1] if code else None
+    if not err:
+        convert(out(stem + ".chd"), out(stem + ".iso"))
+        got = chd_kind(out(stem + ".chd"))
+        err = None if got == want else "made the %s kind, expected %s" % (got, want)
+        err = err or (None if read(out(stem + ".iso")) == data else "contents changed")
+    report("%s -> chd" % name, err, "%s kind chosen, identical after the round trip" % want.upper())
+convert(out("psp.iso"), "--to", "cso", out("psp.cso"))
+code = convert(out("psp.cso"), "--to", "chd-zstd", out("psp_cso.chd"))[0]
+report("psp cso -> chd-zstd", None if not code and chd_kind(out("psp_cso.chd")) == "dvd" else "not the DVD kind", "DVD kind chosen")
+
+# The kind can still be forced from the command line.
 code, lines = convert(src("basic/test.iso"), "--to", "chd-dvd", out("dvd.chd"), "--verify")
 err = lines[-1] if code else None
 if not err:
@@ -161,12 +183,12 @@ def formats(*names):
     import json
     return [f["id"] for f in json.loads(r.stdout)["formats"]]
 checks = [
-    (("more/audio/game.cue",), ["iso", "cso", "zso", "chd", "chd-zstd", "chd-dvd", "ccd"]),
+    (("more/audio/game.cue",), ["iso", "cso", "zso", "chd", "chd-zstd", "ccd"]),
     (("basic/disk.img",), ["vhd", "vhd-fixed", "vhdx", "vmdk", "vdi", "qcow2", "qcow2-compressed"]),
     (("emu/disc.gdi",), ["iso", "cso", "zso", "chd", "chd-zstd"]),
     (("emu/gdrom.chd",), ["iso", "cso", "zso", "chd", "chd-zstd", "gdi"]),
     (("basic/test.iso", "basic/disk.img"), []),
-    (("basic/test.iso", "more/audio/game.cue"), ["cso", "zso", "chd", "chd-zstd", "chd-dvd", "ccd"]),
+    (("basic/test.iso", "more/audio/game.cue"), ["cso", "zso", "chd", "chd-zstd", "ccd"]),
 ]
 bad_lists = ["%s -> %s" % (n, formats(*n)) for n, want in checks if formats(*n) != want]
 report("formats offered", "; ".join(bad_lists) or None, "discs, disks, GD-ROMs and mixed selections")
