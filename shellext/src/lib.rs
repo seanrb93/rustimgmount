@@ -1,17 +1,17 @@
-//! The Windows 11 right-click menu entry for rustimgmount.
+//! The right-click menu entry for rustimgmount on Windows 11.
 //!
 //! Windows 11's main context menu only lists commands from packaged apps that implement
-//! `IExplorerCommand`. This DLL is that implementation: a "rustimgmount" entry with a
-//! flyout holding Mount, Unmount and Convert. Each one just starts rustimgmountw.exe (next
-//! to this DLL) the same way the classic menu entries do. `rustimgmount setup` registers
-//! the package that points Explorer at this DLL.
+//! `IExplorerCommand`. This DLL is that implementation: one "rustimgmount" entry whose
+//! flyout holds Mount, Unmount, the usual formats to convert the selected kind of image
+//! to, and the Convert dialog. Each one just starts rustimgmountw.exe (next to this DLL).
+//! `rustimgmount setup` registers the package that points Explorer at this DLL.
 
 #![allow(non_snake_case)]
 
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicIsize, Ordering};
 use windows::core::{implement, IUnknown, Interface, Ref, Result, BOOL, GUID, HRESULT, HSTRING, PWSTR};
 use windows::Win32::Foundation::{CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_NOTIMPL, E_POINTER, HINSTANCE, HMODULE, S_FALSE, S_OK};
@@ -19,7 +19,7 @@ use windows::Win32::System::Com::{CoTaskMemFree, IBindCtx, IClassFactory, IClass
 use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
 use windows::Win32::UI::Shell::{
     IEnumExplorerCommand, IEnumExplorerCommand_Impl, IExplorerCommand, IExplorerCommand_Impl, IShellItemArray, SHStrDupW, ECF_DEFAULT, ECF_HASSUBCOMMANDS,
-    ECS_ENABLED, SIGDN_FILESYSPATH,
+    ECF_ISSEPARATOR, ECS_ENABLED, ECS_HIDDEN, SIGDN_FILESYSPATH,
 };
 
 /// Class ID of the menu entry; the package manifest written by `rustimgmount setup` names it.
@@ -40,10 +40,74 @@ enum Verb {
     Root,
     Mount,
     Unmount,
-    Convert,
+    Separator,
+    /// Convert straight to this format (a `--to` name).
+    To(&'static str),
+    /// The Convert dialog.
+    More,
 }
 
-const SUBCOMMANDS: [Verb; 3] = [Verb::Mount, Verb::Unmount, Verb::Convert];
+const SUBCOMMANDS: [Verb; 15] = [
+    Verb::Mount,
+    Verb::Unmount,
+    Verb::Separator,
+    Verb::To("iso"),
+    Verb::To("cso"),
+    Verb::To("chd"),
+    Verb::To("cue"),
+    Verb::To("gdi"),
+    Verb::To("vhd"),
+    Verb::To("vhdx"),
+    Verb::To("img"),
+    Verb::To("vmdk"),
+    Verb::To("vdi"),
+    Verb::To("qcow2"),
+    Verb::More,
+];
+
+/// The formats offered directly for a file extension (the same lists as the classic
+/// menu's "Convert to"). Extensions used for both discs and disks get none: for those the
+/// Convert dialog looks inside the file first.
+fn quick_formats(ext: &str) -> &'static [&'static str] {
+    match ext {
+        "img" | "raw" | "001" | "e01" | "ex01" | "m3u" => &[],
+        "gdi" => &["iso", "cso", "chd"],
+        "chd" => &["iso", "cso", "cue", "gdi"],
+        "iso" => &["cso", "chd", "cue"],
+        "cso" => &["iso", "chd", "cue"],
+        "cue" => &["iso", "cso", "chd"],
+        "vhd" => &["vhdx", "img", "vmdk", "vdi", "qcow2"],
+        "vhdx" => &["vhd", "img", "vmdk", "vdi", "qcow2"],
+        "vmdk" => &["vhd", "vhdx", "img", "vdi", "qcow2"],
+        "vdi" => &["vhd", "vhdx", "img", "vmdk", "qcow2"],
+        "qcow2" => &["vhd", "vhdx", "img", "vmdk", "vdi"],
+        "avhd" | "avhdx" | "hdd" | "hdi" | "fdi" | "nhd" | "st" | "msa" | "d88" | "d77" | "d98" | "flp" | "vfd" | "dsk" | "ima" | "dd" => {
+            &["vhd", "vhdx", "img", "vmdk", "vdi", "qcow2"]
+        }
+        _ => &["iso", "cso", "chd", "cue"],
+    }
+}
+
+fn extension(path: &str) -> String {
+    Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
+}
+
+/// Whether rustimgmount has this image mounted, from its records. `None` if they can't be read.
+fn is_mounted(records: &Option<String>, path: &str) -> Option<bool> {
+    let text = records.as_ref()?;
+    // In the JSON file every backslash is doubled.
+    let escaped = path.to_lowercase().replace('\\', "\\\\");
+    // The whole image, or one disc of a multi-disc image ("game.pbp#2").
+    Some(text.contains(&format!("\"{escaped}\"")) || text.contains(&format!("\"{escaped}#")))
+}
+
+fn records() -> Option<String> {
+    let dir = match std::env::var_os("RUSTIMGMOUNT_DATA").filter(|v| !v.is_empty()) {
+        Some(d) => PathBuf::from(d),
+        None => PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("rustimgmount"),
+    };
+    std::fs::read_to_string(dir.join("mounts.json")).ok().map(|t| t.to_lowercase())
+}
 
 #[implement(IExplorerCommand)]
 struct Command(Verb);
@@ -74,10 +138,18 @@ fn launch(args: &[&str]) {
 impl IExplorerCommand_Impl for Command_Impl {
     fn GetTitle(&self, _items: Ref<'_, IShellItemArray>) -> Result<PWSTR> {
         let title = match self.0 {
-            Verb::Root => "rustimgmount",
-            Verb::Mount => "Mount",
-            Verb::Unmount => "Unmount",
-            Verb::Convert => "Convert...",
+            Verb::Root => "rustimgmount".to_string(),
+            Verb::Mount => "Mount".to_string(),
+            Verb::Unmount => "Unmount".to_string(),
+            Verb::Separator => String::new(),
+            Verb::To(id) => format!(
+                "Convert to {}",
+                match id {
+                    "cue" => "BIN/CUE".to_string(),
+                    other => other.to_uppercase(),
+                }
+            ),
+            Verb::More => "More formats and options...".to_string(),
         };
         unsafe { SHStrDupW(&HSTRING::from(title)) }
     }
@@ -98,21 +170,39 @@ impl IExplorerCommand_Impl for Command_Impl {
         Ok(GUID::zeroed())
     }
 
-    fn GetState(&self, _items: Ref<'_, IShellItemArray>, _slow_ok: BOOL) -> Result<u32> {
-        // The package manifest lists the file types, so the entry is only asked for on images.
-        Ok(ECS_ENABLED.0 as u32)
+    /// Entries that don't apply to the selection are left out: Unmount for images that
+    /// aren't mounted, Mount for ones that are, and formats that don't fit the file type.
+    fn GetState(&self, items: Ref<'_, IShellItemArray>, _slow_ok: BOOL) -> Result<u32> {
+        let files = paths(items);
+        let show = match self.0 {
+            Verb::Root | Verb::Separator | Verb::More => true,
+            Verb::Mount | Verb::Unmount => {
+                let records = records();
+                let mounted: Vec<Option<bool>> = files.iter().map(|f| is_mounted(&records, f)).collect();
+                if self.0 == Verb::Mount {
+                    // Hidden only when every selected image is known to be mounted already.
+                    files.is_empty() || !mounted.iter().all(|m| *m == Some(true))
+                } else {
+                    files.is_empty() || mounted.iter().any(|m| *m != Some(false))
+                }
+            }
+            Verb::To(id) => !files.is_empty() && files.iter().all(|f| quick_formats(&extension(f)).contains(&id)),
+        };
+        Ok(if show { ECS_ENABLED.0 } else { ECS_HIDDEN.0 } as u32)
     }
 
     fn Invoke(&self, items: Ref<'_, IShellItemArray>, _ctx: Ref<'_, IBindCtx>) -> Result<()> {
         let files = paths(items);
         match self.0 {
-            Verb::Root => {}
+            Verb::Root | Verb::Separator => {}
             Verb::Mount => files.iter().for_each(|f| launch(&["mount", f, "--open"])),
             Verb::Unmount => files.iter().for_each(|f| launch(&["unmount", f])),
+            // Each goes into rustimgmountw's one queue, so they run one after another.
+            Verb::To(id) => files.iter().for_each(|f| launch(&["convert", f, "--to", id])),
             // One dialog for the whole selection. Windows limits a command line to about
             // 32,000 characters, so a huge selection goes in several lots; rustimgmountw
             // gathers them into the same dialog.
-            Verb::Convert => {
+            Verb::More => {
                 let mut lot: Vec<&str> = vec!["convert-ui"];
                 let mut len = 0;
                 for f in &files {
@@ -133,7 +223,11 @@ impl IExplorerCommand_Impl for Command_Impl {
     }
 
     fn GetFlags(&self) -> Result<u32> {
-        Ok(if self.0 == Verb::Root { ECF_HASSUBCOMMANDS.0 as u32 } else { ECF_DEFAULT.0 as u32 })
+        Ok(match self.0 {
+            Verb::Root => ECF_HASSUBCOMMANDS.0,
+            Verb::Separator => ECF_ISSEPARATOR.0,
+            _ => ECF_DEFAULT.0,
+        } as u32)
     }
 
     fn EnumSubCommands(&self) -> Result<IEnumExplorerCommand> {

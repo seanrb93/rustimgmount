@@ -1000,8 +1000,10 @@ fn setup(no_menu: bool) -> Result<i32> {
     // Register from the installed copy so Explorer points there, not at this one.
     run_installed(&exe, &["associate", "--no-settings"])?;
     if !no_menu {
-        run_installed(&exe, &["install"])?;
-        // Windows 11's main menu (the one before "Show more options").
+        // Windows 11: one "rustimgmount" entry in the main right-click menu. It needs the
+        // menu DLL and Developer Mode; where it can't be had, the classic entries under
+        // "Show more options" are installed instead. Never both: they would repeat each other.
+        let mut modern = false;
         if dest.join(winutil::SHELL_DLL).exists() && dest.join("rustimgmountw.exe").exists() {
             // Registering the package makes Windows close the programs in it, the tray app included.
             let tray = winutil::tray_running();
@@ -1010,11 +1012,19 @@ fn setup(no_menu: bool) -> Result<i32> {
                 winutil::start_tray(&dest);
             }
             match result {
-                Ok(()) => println!("Windows 11 menu: \"rustimgmount\" (Mount, Unmount, Convert) added to the main right-click menu."),
+                Ok(()) => {
+                    modern = true;
+                    winutil::uninstall_shell()?;
+                    println!("Right-click menu: \"rustimgmount\" (Mount, Unmount, Convert) added to the Windows 11 menu.");
+                }
                 Err(e) => println!(
-                    "Windows 11 menu: not added ({e}).\n  It needs Developer Mode: Settings > System > For developers. Turn it on and run setup again.\n  The entries under \"Show more options\" work either way."
+                    "Windows 11 menu: not added ({e}).
+  It needs Developer Mode: Settings > System > For developers. Turn it on and run setup again."
                 ),
             }
+        }
+        if !modern {
+            run_installed(&exe, &["install"])?;
         }
     } else {
         winutil::unregister_modern_menu();

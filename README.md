@@ -161,10 +161,11 @@ it takes more than about 1.5 seconds (converting a big image), a small progress 
 
 ### Converting between formats
 
-Right-click an image and pick **Convert to**, then the format. The new file appears next to the original,
-with the same name. **More formats and options...** at the bottom of that menu opens the Convert dialog;
-files whose extension is used for both discs and disks (`.img`, `.raw`, `.001`, `.e01`) get a single
-**Convert...** entry that goes straight to it.
+Right-click an image, open **rustimgmount** and pick **Convert to ...** with the format. The new file
+appears next to the original, with the same name. **More formats and options...** opens the Convert
+dialog; files whose extension is used for both discs and disks (`.img`, `.raw`, `.001`, `.e01`) only get
+that entry, because the dialog looks inside the file first. (With the classic menu, the same choices are
+under **Convert to**.)
 
 **The Convert dialog** looks inside the image first and lists only the formats that fit it. There you can also:
 - choose another folder for the result,
@@ -282,14 +283,21 @@ the same way the right-click menu does.
 - **Without admin:** you can mount and unmount anything that ends up as an ISO, which covers every CD/DVD/GD-ROM format above.
 - **With admin:** Windows requires it to attach VHD files, which covers every converted hard disk image. rustimgmount shows a UAC prompt when it needs one.
 
-**Windows 11's main right-click menu.** With Developer Mode on (Settings > System > For developers),
-`rustimgmount setup` also adds a **rustimgmount** entry to the menu you get straight away, with **Mount**,
-**Unmount** and **Convert...** (the Convert dialog, for everything selected). Windows only lists commands
-from packaged apps there, so setup registers a small package that points at `rustimgmount_shell.dll` in the
-install folder. The package is unsigned, which is why Developer Mode is needed; without it setup says so
-and carries on. The same entry also shows under "Show more options", next to the classic entries there
-("Mount with rustimgmount", "Unmount", and "Convert to" with its list of formats), which work with or
-without Developer Mode. `setup --remove` unregisters the package.
+**The right-click menu.** `rustimgmount setup` installs one of two menus, never both:
+
+- **Windows 11, with Developer Mode on** (Settings > System > For developers): a single **rustimgmount**
+  entry in the menu you get straight away (it also shows under "Show more options"). Its flyout holds
+  **Mount** or **Unmount** (whichever applies to the image), **Convert to ...** for the formats that suit
+  the file type, and **More formats and options...** for the Convert dialog. Windows only lists commands
+  from packaged apps in that menu, so setup registers a small package that points at
+  `rustimgmount_shell.dll` in the install folder. The package is unsigned, which is why Developer Mode is
+  needed.
+- **Otherwise** (Windows 10, Developer Mode off, or the DLL not built): the classic entries under "Show
+  more options": **Mount with rustimgmount**, **Unmount (rustimgmount)** and **Convert to** with its list
+  of formats. `rustimgmount install` adds these on their own.
+
+Double-click associations add a bold **Mount** at the top of the menu as well; that is Windows showing
+the file type's default action. `setup --remove` takes all of it away.
 
 If you move `rustimgmount.exe` after running `install`, the next time you run it the classic menu is updated
 to the new location.
