@@ -7,7 +7,9 @@ command line, by double-clicking images, or from its notification-area (tray) ic
 **Install:** download the installer (`rustimgmount-...-setup.exe`) from the
 [latest release](https://github.com/seanrb93/rustimgmount/releases/latest) and run it. It installs for your
 user account only, needs no administrator rights, and sets up double-click mounting, the right-click menu
-and the Start Menu entry for the tray app. The installer isn't code-signed, so Windows may warn that the
+and the Start Menu entry for the tray app. Tick "Start rustimgmount's tray app when I sign in to Windows"
+on the way if you want the tray icon there after every sign-in (you can change it later with **Start with
+Windows** in the tray menu). The installer isn't code-signed, so Windows may warn that the
 publisher is unknown: choose "More info", then "Run anyway". Uninstall it from Settings > Apps.
 
 Or get the zip from the same page, unpack it anywhere and run `rustimgmount setup`. Or build it yourself

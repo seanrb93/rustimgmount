@@ -36,6 +36,10 @@ WizardStyle=modern
 ; The tray app and the menu DLL may be in use; they are closed in PrepareToInstall below.
 CloseApplications=no
 
+[Tasks]
+; Off unless ticked. The same setting is "Start with Windows" in the tray app's menu.
+Name: "autostart"; Description: "Start rustimgmount's tray app when I sign in to Windows"; Flags: unchecked
+
 [Files]
 Source: "..\target\release\rustimgmount.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\target\release\rustimgmountw.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -46,6 +50,7 @@ Source: "..\LICENSE-UNRAR.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Run]
 Filename: "{app}\rustimgmount.exe"; Parameters: "setup"; Flags: runhidden; StatusMsg: "Setting up file associations and the right-click menu..."
+Filename: "{app}\rustimgmount.exe"; Parameters: "autostart on"; Flags: runhidden; Tasks: autostart
 Filename: "{app}\rustimgmountw.exe"; Parameters: "--tray"; Description: "Start the tray app now"; Flags: postinstall nowait skipifsilent
 
 [UninstallRun]
