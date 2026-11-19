@@ -253,16 +253,51 @@ fn latest_version() -> Option<String> {
     if let Some(v) = std::env::var("RUSTIMGMOUNT_TEST_LATEST").ok().filter(|v| !v.is_empty()) {
         return Some(v);
     }
-    let curl = std::path::PathBuf::from(std::env::var_os("SystemRoot")?).join("System32").join("curl.exe");
-    let out = std::process::Command::new(curl)
-        .args(["-s", "-o", "NUL", "-m", "15", "-w", "%{redirect_url}", RELEASES])
-        .creation_flags(0x0800_0000)
-        .output()
-        .ok()?;
-    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let url = latest_release_location()?;
     let (_, tag) = url.rsplit_once("/tag/")?;
     let version = tag.trim_start_matches('v');
     (!version.is_empty() && version.chars().all(|c| c.is_ascii_digit() || c == '.')).then(|| version.to_string())
+}
+
+/// Where GitHub's "latest release" page redirects to, which names the newest version.
+/// Asked with a HEAD request through Windows' own HTTP client, following no redirect.
+fn latest_release_location() -> Option<String> {
+    use windows_sys::Win32::Networking::WinHttp::*;
+    struct H(*mut std::ffi::c_void);
+    impl Drop for H {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe { WinHttpCloseHandle(self.0) };
+            }
+        }
+    }
+    let path = RELEASES.strip_prefix("https://github.com")?;
+    unsafe {
+        let session = H(WinHttpOpen(wide(&format!("rustimgmount/{}", env!("CARGO_PKG_VERSION"))).as_ptr(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, null(), null(), 0));
+        if session.0.is_null() {
+            return None;
+        }
+        WinHttpSetTimeouts(session.0, 15_000, 15_000, 15_000, 15_000);
+        let connection = H(WinHttpConnect(session.0, wide("github.com").as_ptr(), 443, 0));
+        if connection.0.is_null() {
+            return None;
+        }
+        let request = H(WinHttpOpenRequest(connection.0, wide("HEAD").as_ptr(), wide(path).as_ptr(), null(), null(), null(), WINHTTP_FLAG_SECURE));
+        if request.0.is_null() {
+            return None;
+        }
+        let no_redirects: u32 = WINHTTP_DISABLE_REDIRECTS;
+        WinHttpSetOption(request.0, WINHTTP_OPTION_DISABLE_FEATURE, &no_redirects as *const u32 as *const _, 4);
+        if WinHttpSendRequest(request.0, null(), 0, null(), 0, 0, 0) == 0 || WinHttpReceiveResponse(request.0, null_mut()) == 0 {
+            return None;
+        }
+        let mut buf = vec![0u16; 1024];
+        let mut len = (buf.len() * 2) as u32;
+        if WinHttpQueryHeaders(request.0, WINHTTP_QUERY_LOCATION, null(), buf.as_mut_ptr() as *mut _, &mut len, null_mut()) == 0 {
+            return None;
+        }
+        Some(String::from_utf16_lossy(&buf[..len as usize / 2]))
+    }
 }
 
 /// Is version `a` newer than `b`? ("0.1.10" is newer than "0.1.9".)
@@ -292,6 +327,14 @@ fn check_for_updates() {
 
 #[cfg(test)]
 mod tests {
+    /// Asks GitHub for real, so it only runs when asked for: `cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn latest_release_lookup() {
+        let v = super::latest_version().expect("no answer from GitHub");
+        assert!(v.split('.').count() >= 3, "odd version {v}");
+    }
+
     #[test]
     fn versions_compare_by_number() {
         assert!(super::newer("0.1.10", "0.1.9"));

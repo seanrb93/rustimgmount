@@ -3,6 +3,18 @@
 What changed in each release of rustimgmount. The newest is first. Each section here
 becomes that version's release notes on GitHub.
 
+## 0.1.12
+
+- **Less like malware to antivirus programs.** Microsoft Defender flagged a copy of rustimgmount as
+  `Trojan:Win32/Bearfoos.A!ml`, a guess by its machine-learning model, not a known threat. Several
+  things the program did are also typical of malware, and are now done differently:
+  - Uninstalling no longer starts a hidden command window that waits and then deletes the folder.
+    Files in use are moved into the temporary folder instead, and the folder is removed directly.
+  - Uninstalling asks the tray app to close instead of force-killing it.
+  - The Start Menu shortcut is made with Windows' own shortcut object, not a PowerShell script.
+  - Checking for updates uses Windows' own web client instead of starting `curl.exe` hidden.
+  - Unmounting no longer asks PowerShell to bypass its script policy, which it didn't need.
+
 ## 0.1.11
 
 - **Fixed: "Create ISO image" was missing when right-clicking a folder** on PCs with the Windows 11

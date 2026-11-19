@@ -598,22 +598,78 @@ pub fn start_menu_shortcut() -> std::path::PathBuf {
         .join(r"Microsoft\Windows\Start Menu\Programs\rustimgmount.lnk")
 }
 
+/// Write a shortcut (.lnk) with the shell's own ShellLink object.
 pub fn create_shortcut(lnk: &std::path::Path, target: &std::path::Path, args: &str, description: &str) -> Result<()> {
-    // WScript.Shell is the simplest dependable way to write a .lnk file.
-    let ps = format!(
-        "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}');$s.TargetPath='{}';$s.Arguments='{}';$s.IconLocation='{},0';$s.Description='{}';$s.WorkingDirectory='{}';$s.Save()",
-        lnk.display().to_string().replace('\'', "''"),
-        target.display().to_string().replace('\'', "''"),
-        args.replace('\'', "''"),
-        target.display().to_string().replace('\'', "''"),
-        description.replace('\'', "''"),
-        target.parent().map(|p| p.display().to_string()).unwrap_or_default().replace('\'', "''"),
-    );
-    let st = std::process::Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &ps]).status()?;
-    if !st.success() {
-        bail!("could not create the Start Menu shortcut");
+    use std::ffi::c_void;
+    use windows_sys::core::{GUID, HRESULT};
+    use windows_sys::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
+    // The parts of IShellLinkW and IPersistFile used here, in their vtable order.
+    #[repr(C)]
+    struct ShellLinkVtbl {
+        query_interface: unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
+        add_ref: unsafe extern "system" fn(*mut c_void) -> u32,
+        release: unsafe extern "system" fn(*mut c_void) -> u32,
+        get_path: usize,
+        get_id_list: usize,
+        set_id_list: usize,
+        get_description: usize,
+        set_description: unsafe extern "system" fn(*mut c_void, *const u16) -> HRESULT,
+        get_working_directory: usize,
+        set_working_directory: unsafe extern "system" fn(*mut c_void, *const u16) -> HRESULT,
+        get_arguments: usize,
+        set_arguments: unsafe extern "system" fn(*mut c_void, *const u16) -> HRESULT,
+        get_hotkey: usize,
+        set_hotkey: usize,
+        get_show_cmd: usize,
+        set_show_cmd: usize,
+        get_icon_location: usize,
+        set_icon_location: unsafe extern "system" fn(*mut c_void, *const u16, i32) -> HRESULT,
+        set_relative_path: usize,
+        resolve: usize,
+        set_path: unsafe extern "system" fn(*mut c_void, *const u16) -> HRESULT,
     }
-    Ok(())
+    #[repr(C)]
+    struct PersistFileVtbl {
+        query_interface: usize,
+        add_ref: usize,
+        release: unsafe extern "system" fn(*mut c_void) -> u32,
+        get_class_id: usize,
+        is_dirty: usize,
+        load: usize,
+        save: unsafe extern "system" fn(*mut c_void, *const u16, i32) -> HRESULT,
+    }
+    const CLSID_SHELL_LINK: GUID = GUID::from_u128(0x00021401_0000_0000_c000_000000000046);
+    const IID_ISHELL_LINK_W: GUID = GUID::from_u128(0x000214f9_0000_0000_c000_000000000046);
+    const IID_IPERSIST_FILE: GUID = GUID::from_u128(0x0000010b_0000_0000_c000_000000000046);
+    let check = |hr: HRESULT, what: &str| if hr < 0 { bail!("could not create the Start Menu shortcut ({what} failed: 0x{hr:08x})") } else { Ok(()) };
+    unsafe {
+        let init = CoInitializeEx(null(), COINIT_APARTMENTTHREADED as u32);
+        let result = (|| -> Result<()> {
+            let mut link: *mut c_void = null_mut();
+            check(CoCreateInstance(&CLSID_SHELL_LINK, null_mut(), CLSCTX_INPROC_SERVER, &IID_ISHELL_LINK_W, &mut link), "ShellLink")?;
+            let lv = &**(link as *mut *const ShellLinkVtbl);
+            let dir = target.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+            let r = (|| -> Result<()> {
+                check((lv.set_path)(link, wide(target).as_ptr()), "SetPath")?;
+                check((lv.set_arguments)(link, wide(args).as_ptr()), "SetArguments")?;
+                check((lv.set_description)(link, wide(description).as_ptr()), "SetDescription")?;
+                check((lv.set_working_directory)(link, wide(&dir).as_ptr()), "SetWorkingDirectory")?;
+                check((lv.set_icon_location)(link, wide(target).as_ptr(), 0), "SetIconLocation")?;
+                let mut file: *mut c_void = null_mut();
+                check((lv.query_interface)(link, &IID_IPERSIST_FILE, &mut file), "IPersistFile")?;
+                let fv = &**(file as *mut *const PersistFileVtbl);
+                let saved = (fv.save)(file, wide(lnk).as_ptr(), 1);
+                (fv.release)(file);
+                check(saved, "Save")
+            })();
+            (lv.release)(link);
+            r
+        })();
+        if init >= 0 {
+            CoUninitialize();
+        }
+        result
+    }
 }
 
 /// Start the tray app when the user signs in (or stop doing so).

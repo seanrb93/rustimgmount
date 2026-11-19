@@ -1123,8 +1123,8 @@ fn setup_remove(purge: bool, keep_files: bool) -> Result<i32> {
     winutil::set_autostart(false)?;
     let _ = std::fs::remove_file(winutil::start_menu_shortcut());
     winutil::remove_from_path(&dest)?;
-    // Stop the tray app if it runs from the install folder.
-    let _ = std::process::Command::new("taskkill").args(["/F", "/IM", "rustimgmountw.exe"]).output();
+    // Ask the tray app to close (its files can't be removed while it runs).
+    winutil::stop_tray();
     if purge {
         if vdisk::attached_images().map(|v| v.iter().any(|a| state::is_inside(a, &state::app_dir()))).unwrap_or(true) {
             eprintln!("note: images are still mounted from the cache; keeping {}", state::app_dir().display());
@@ -1132,19 +1132,52 @@ fn setup_remove(purge: bool, keep_files: bool) -> Result<i32> {
             let _ = std::fs::remove_dir_all(state::app_dir());
         }
     }
-    // A running program can't delete its own folder: let a short-lived helper do it.
-    let here = std::env::current_exe()?;
     if keep_files {
         // The installer put the files there and removes them itself.
-    } else if here.starts_with(&dest) || state::is_inside(&here, &dest) {
-        let cmd = format!("ping -n 3 127.0.0.1 >nul & rmdir /s /q \"{}\"", dest.display());
-        use std::os::windows::process::CommandExt;
-        let _ = std::process::Command::new("cmd.exe").args(["/c", &cmd]).creation_flags(0x0800_0000).spawn();
     } else if dest.exists() {
-        std::fs::remove_dir_all(&dest).with_context(|| format!("deleting {}", dest.display()))?;
+        remove_install_dir(&dest)?;
     }
     println!("rustimgmount setup removed{}.", if purge { " (records and cache deleted)" } else { "" });
     Ok(0)
+}
+
+/// Delete the install folder. Files that are in use (this program itself, when it is the
+/// installed copy, or the menu DLL while Explorer has it loaded) can't be deleted, but they
+/// can be renamed: they are moved into the temporary folder, which Windows clears out.
+fn remove_install_dir(dest: &Path) -> Result<()> {
+    if std::fs::remove_dir_all(dest).is_ok() {
+        return Ok(());
+    }
+    let leftovers = std::env::temp_dir().join(format!("rustimgmount-removed-{}", std::process::id()));
+    let mut moved = 0;
+    for e in walk_files(dest) {
+        if std::fs::remove_file(&e).is_ok() {
+            continue;
+        }
+        let _ = std::fs::create_dir_all(&leftovers);
+        let name = e.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+        if std::fs::rename(&e, leftovers.join(name)).is_ok() {
+            moved += 1;
+        }
+    }
+    std::fs::remove_dir_all(dest).with_context(|| format!("deleting {}", dest.display()))?;
+    if moved > 0 {
+        println!("{moved} file(s) in use were moved to {} for Windows to clear away.", leftovers.display());
+    }
+    Ok(())
+}
+
+fn walk_files(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            out.extend(walk_files(&p));
+        } else {
+            out.push(p);
+        }
+    }
+    out
 }
 
 fn info(image: &Path) -> Result<i32> {
@@ -1591,4 +1624,59 @@ fn clean_cache(all: bool) -> Result<usize> {
         }
     }
     Ok(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("rustimgmount-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// An install folder whose program is running is still removed: the running file is
+    /// moved aside into the temporary folder.
+    #[test]
+    fn removes_folder_with_running_program() {
+        let dir = scratch("remove");
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(dir.join("assets").join("logo.png"), b"x").unwrap();
+        std::fs::write(dir.join("README.md"), b"x").unwrap();
+        // Any long-running program will do; it runs from the folder being removed.
+        let exe = dir.join("busy.exe");
+        std::fs::copy(PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32").join("PING.EXE"), &exe).unwrap();
+        let mut child = std::process::Command::new(&exe)
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let result = super::remove_install_dir(&dir);
+        let gone = !dir.exists();
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join(format!("rustimgmount-removed-{}", std::process::id())));
+        result.unwrap();
+        assert!(gone, "the folder is still there");
+    }
+
+    /// The Start Menu shortcut is written by the shell's ShellLink object.
+    #[test]
+    fn writes_a_shortcut() {
+        let dir = scratch("shortcut");
+        let lnk = dir.join("test.lnk");
+        let target = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("notepad.exe");
+        crate::winutil::create_shortcut(&lnk, &target, "--tray", "a test shortcut").unwrap();
+        let bytes = std::fs::read(&lnk).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(&bytes[..4], &[0x4c, 0, 0, 0], "not a shortcut file");
+        let utf16: Vec<u8> = "--tray".encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        assert!(bytes.windows(utf16.len()).any(|w| w == utf16), "the arguments are missing");
+        let name: Vec<u8> = "notepad.exe".encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        let found = bytes.windows(name.len()).any(|w| w == name) || bytes.windows(11).any(|w| w.eq_ignore_ascii_case(b"notepad.exe"));
+        assert!(found, "the target is missing");
+    }
 }

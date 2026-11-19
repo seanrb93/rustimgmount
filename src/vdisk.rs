@@ -367,7 +367,7 @@ pub fn dismount_device(device: &str) -> io::Result<()> {
     let script = format!("$ErrorActionPreference='Stop'; Dismount-DiskImage -DevicePath '{}' | Out-Null", device.to_uppercase());
     use std::os::windows::process::CommandExt;
     let out = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script])
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .creation_flags(0x0800_0000) // CREATE_NO_WINDOW: this also runs from the windowless helpers
         .output()?;
     if out.status.success() {

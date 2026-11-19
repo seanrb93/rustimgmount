@@ -1,6 +1,6 @@
 [package]
 name = "rustimgmount"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 description = "Mount common disk images (ISO, VHD/VHDX, IMG, BIN/CUE, NRG, MDF, VMDK, VDI, QCOW2, ...) on Windows"
 license = "MIT"
@@ -65,6 +65,7 @@ features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_Graphics_Gdi",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_Networking_WinHttp",
 ]
 
 [profile.release]
