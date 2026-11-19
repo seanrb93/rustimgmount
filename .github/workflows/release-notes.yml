@@ -2,7 +2,8 @@ name: Release notes
 
 # Keeps the notes of the published releases in step with CHANGELOG.md: whenever that file
 # changes on main (or when run by hand), every release that has a section there gets its
-# notes rewritten from it.
+# notes rewritten from it. A release from before checksums were published gets its
+# checksum file added, worked out from the downloads it already has.
 
 on:
   push:
@@ -33,4 +34,17 @@ jobs:
             gh release edit $tag --notes-file notes.md
             if ($LASTEXITCODE -ne 0) { throw "Could not update the notes of $tag" }
             Write-Host "Updated $tag"
+            $assets = gh release view $tag --json assets --jq ".assets[].name"
+            if (-not ($assets | Where-Object { $_ -like "*-sha256.txt" })) {
+              $dir = "assets-$tag"
+              gh release download $tag --dir $dir
+              if ($LASTEXITCODE -ne 0) { throw "Could not download the files of $tag" }
+              $lines = Get-ChildItem $dir -File | Sort-Object Name |
+                ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name }
+              $sums = Join-Path $dir "rustimgmount-$($tag.TrimStart('v'))-sha256.txt"
+              [IO.File]::WriteAllText((Join-Path $PWD $sums), ($lines -join "`n") + "`n")
+              gh release upload $tag $sums
+              if ($LASTEXITCODE -ne 0) { throw "Could not add the checksums to $tag" }
+              Write-Host "Added checksums to $tag"
+            }
           }

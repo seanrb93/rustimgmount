@@ -122,6 +122,8 @@ pub const SHELL_DLL: &str = "rustimgmount_shell.dll";
 const MENU_PACKAGE: &str = "rustimgmount.ShellMenu";
 /// Must match CLSID_MENU in shellext/src/lib.rs.
 const MENU_CLSID: &str = "7b3f5e2a-9c41-4d6b-a8e3-52c1d0f4b916";
+/// The entry on folders ("Create ISO image"). Must match CLSID_FOLDER in shellext/src/lib.rs.
+const FOLDER_CLSID: &str = "7b3f5e2a-9c41-4d6b-a8e3-52c1d0f4b917";
 
 fn powershell(script: &str) -> Result<()> {
     use std::os::windows::process::CommandExt;
@@ -152,6 +154,9 @@ pub fn register_modern_menu(dir: &std::path::Path) -> Result<()> {
     let types: String = SHELL_EXTS
         .iter()
         .map(|e| format!("            <desktop5:ItemType Type=\".{e}\"><desktop5:Verb Id=\"RustImgMount\" Clsid=\"{MENU_CLSID}\" /></desktop5:ItemType>\n"))
+        .chain([format!(
+            "            <desktop5:ItemType Type=\"Directory\"><desktop5:Verb Id=\"RustImgMountIso\" Clsid=\"{FOLDER_CLSID}\" /></desktop5:ItemType>\n"
+        )])
         .collect();
     let manifest = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
@@ -191,6 +196,7 @@ pub fn register_modern_menu(dir: &std::path::Path) -> Result<()> {
           <com:ComServer>
             <com:SurrogateServer DisplayName="rustimgmount menu">
               <com:Class Id="{MENU_CLSID}" Path="{SHELL_DLL}" ThreadingModel="STA" />
+              <com:Class Id="{FOLDER_CLSID}" Path="{SHELL_DLL}" ThreadingModel="STA" />
             </com:SurrogateServer>
           </com:ComServer>
         </com:Extension>
@@ -780,7 +786,9 @@ fn remove_legacy_verbs() {
 /// The "Convert to" submenu.
 const CONVERT_ID: &str = "rustimgmount.convert";
 /// Bumped when the menu's layout changes, so an installed menu gets refreshed.
-const MENU_VERSION: &str = "2";
+const MENU_VERSION: &str = "3";
+/// The entry on folders, which makes an ISO image of the folder.
+const FOLDER_KEY: &str = r"Software\Classes\Directory\shell\rustimgmount.createiso";
 
 /// Formats offered directly under "Convert to" for a file extension. `None` for
 /// extensions used for both discs and disks (.img, .raw, ...): those get a single
@@ -846,6 +854,9 @@ pub fn install_shell() -> Result<()> {
             reg_set(HKEY_CURRENT_USER, &format!(r"{base}\command"), None, &ui_command(cmd)?)?;
         }
     }
+    reg_set(HKEY_CURRENT_USER, FOLDER_KEY, Some("MUIVerb"), "Create ISO image")?;
+    reg_set(HKEY_CURRENT_USER, FOLDER_KEY, Some("Icon"), &format!("{exe_s},0"))?;
+    reg_set(HKEY_CURRENT_USER, &format!(r"{FOLDER_KEY}\command"), None, &ui_command("create")?)?;
     Ok(())
 }
 
@@ -856,5 +867,6 @@ pub fn uninstall_shell() -> Result<()> {
             reg_delete_tree(HKEY_CURRENT_USER, &format!(r"Software\Classes\SystemFileAssociations\.{ext}\shell\{id}"));
         }
     }
+    reg_delete_tree(HKEY_CURRENT_USER, FOLDER_KEY);
     Ok(())
 }

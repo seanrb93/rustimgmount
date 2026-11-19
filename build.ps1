@@ -16,6 +16,9 @@
 .PARAMETER Installer
     Also make dist\rustimgmount-<version>-setup.exe. Needs Inno Setup 6 (ISCC.exe).
 
+    With -Package or -Installer, dist\rustimgmount-<version>-sha256.txt is written too: the
+    SHA-256 checksum of each download, for checking that a copy arrived intact.
+
 .EXAMPLE
     .\build.ps1
     .\build.ps1 -Test -Package -Installer
@@ -58,6 +61,15 @@ if ($Installer) {
     if (-not $iscc) { throw "Inno Setup 6 was not found. Install it from https://jrsoftware.org/isinfo.php, or leave out -Installer." }
     Run "Building the installer" { & $iscc /Qp "/DAppVersion=$version" installer\rustimgmount.iss }
     Write-Host "Wrote dist\rustimgmount-$version-setup.exe"
+}
+
+if ($Package -or $Installer) {
+    # One line per download, in the layout `sha256sum -c` reads.
+    $sums = "dist\rustimgmount-$version-sha256.txt"
+    $lines = Get-ChildItem dist -File -Filter "rustimgmount-$version-*" | Where-Object { $_.Name -notlike "*-sha256.txt" } | Sort-Object Name |
+        ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name }
+    [IO.File]::WriteAllText((Join-Path $PSScriptRoot $sums), ($lines -join "`n") + "`n")
+    Write-Host "Wrote $sums"
 }
 
 Write-Host "Done. The programs are in target\release; install them with: target\release\rustimgmount.exe setup" -ForegroundColor Green

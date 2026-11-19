@@ -100,11 +100,12 @@ pub fn run_hidden(args: &[String], show_errors: bool) -> i32 {
     };
     let (mut out, mut err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
     let title = match (args.first().map(String::as_str), args.get(1)) {
-        (Some(verb @ ("mount" | "unmount" | "convert")), Some(p)) => {
+        (Some(verb @ ("mount" | "unmount" | "convert" | "create")), Some(p)) => {
             let name = std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.clone());
             let doing = match verb {
                 "mount" => "Mounting",
                 "unmount" => "Unmounting",
+                "create" => "Making an ISO image of",
                 _ => "Converting",
             };
             format!("{doing} {name}")

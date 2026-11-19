@@ -16,6 +16,7 @@ no administrator rights to install.
 - **Convert between formats** from the right-click menu: a CUE/BIN to a CHD, a CHD back to CUE/BIN, an
   ISO to CSO, a VMDK to VHDX, and so on. Select many files to convert them in one go; it can check each
   result against the original.
+- **Make an ISO from a folder:** right-click the folder and choose **Create ISO image**.
 - **Open images inside archives** (zip, 7z, rar, gz, ...) without unpacking them yourself.
 - **Use it your way:** double-click, the right-click menu, a tray icon, or the command line.
 
@@ -47,6 +48,7 @@ file of that type > Open with > Choose another app > rustimgmount > Always. You 
 | Mount an image | Double-click it, or right-click > **rustimgmount** > **Mount** |
 | Unmount it | Right-click the drive > **Eject**, or right-click the image > **rustimgmount** > **Unmount** |
 | Convert an image | Right-click > **rustimgmount** > **Convert to ...**, or **More formats and options...** |
+| Make an ISO from a folder | Right-click the folder > **Create ISO image** |
 | See what's mounted | Click the rustimgmount icon in the notification area (start it from the Start Menu) |
 
 On Windows 11 the **rustimgmount** entry is in the main right-click menu when Developer Mode is on, and
@@ -191,8 +193,9 @@ rustimgmount unmount <image | E: | all> [--everything]   # "all" = images rustim
 rustimgmount list
 rustimgmount info <image>               # show the format, tracks and plan, without mounting
 rustimgmount convert <image> --to FORMAT [output] [--verify] [--delete-original] ...   # see "Converting" below
+rustimgmount create <folder> [output.iso] [--label NAME] [--overwrite]   # see "Making an ISO from a folder" below
 rustimgmount clean                      # delete cached conversions that are not mounted
-rustimgmount install                    # add "Mount", "Unmount" and "Convert to" to Explorer's right-click menu
+rustimgmount install                    # add "Mount", "Unmount", "Convert to" and "Create ISO image" to Explorer's right-click menu
 rustimgmount uninstall
 rustimgmount associate                  # double-clicking a supported image mounts it and opens the drive
 rustimgmount unassociate                # undo, restoring your previous defaults
@@ -229,7 +232,7 @@ Explorer caches icons, so new ones can take a sign-out to appear. The icons are 
 
 **Tray app.** The Start Menu entry (or `rustimgmountw --tray`) puts a disc icon in the notification area.
 Click it for a menu of what's mounted (open or unmount each image), **Mount image...**, **Mount recent**
-(the last ten images you mounted), **Convert image...** (opens the Convert dialog), **Unmount all**,
+(the last ten images you mounted), **Convert image...** (opens the Convert dialog), **Create ISO from folder...**, **Unmount all**,
 **Start with Windows** and **Uninstall rustimgmount...**.
 
 **Progress.** Mounting from Explorer, the tray or the right-click menu shows no window when it's quick. If
@@ -327,6 +330,29 @@ converted.
   complete. Cancelling, a failure or a full drive deletes it. An existing file is only replaced with
   `--overwrite`, and a conversion never writes over the image it's reading.
 
+### Making an ISO from a folder
+
+Right-click a folder and choose **Create ISO image**, or pick **Create ISO from folder...** in the tray
+menu. The image appears next to the folder, named after it: `Photos` becomes `Photos.iso`. If that name
+is taken, the new image is called `Photos (2).iso`, so nothing is written over. From a terminal:
+
+```
+rustimgmount create <folder> [output.iso] [--label NAME] [--overwrite]
+```
+
+- **What you get.** A standard data disc image (ISO 9660 with Joliet names) that Windows, macOS and
+  Linux open, and that you can mount, burn or convert to CSO or CHD like any other ISO. File names keep
+  their capitals, spaces and non-English letters. Dates and the hidden attribute are kept.
+- **The disc's name** is the folder's name, or what you give with `--label`. Windows shows the first 16
+  characters.
+- **Big files are fine.** A file of 4 GiB or more is recorded in several pieces, which Windows (Vista
+  and later), macOS and Linux read as one file.
+- **Limits of the format.** A name can be at most 103 characters; with a longer one, nothing is written
+  and the names are listed so you can shorten them. A `;` in a name is written as `_`, and it says so.
+  Folders that are links to other folders (junctions and symbolic links) are left out, because they can
+  lead back into themselves.
+- Nothing half-written is left behind, as with converting.
+
 ### CD audio
 
 Windows' ISO mount only shows a disc's data. Many PlayStation, Saturn and Sega CD games keep their music in
@@ -378,13 +404,14 @@ the same way the right-click menu does.
   entry in the menu you get straight away (it also shows under "Show more options"). Its flyout holds
   **Mount** or **Unmount** (whichever applies to the image), **Convert to ...** for the formats that suit
   the image, and **More formats and options...** for the Convert dialog. It looks inside the file to
-  decide, so a `.img` that is a disc is offered disc formats and one that is a disk gets disk formats. Windows only lists commands
+  decide, so a `.img` that is a disc is offered disc formats and one that is a disk gets disk formats.
+  Folders get their own entry, **Create ISO image**. Windows only lists commands
   from packaged apps in that menu, so setup registers a small package that points at
   `rustimgmount_shell.dll` in the install folder. The package is unsigned, which is why Developer Mode is
   needed.
 - **Otherwise** (Windows 10, Developer Mode off, or the DLL not built): the classic entries under "Show
   more options": **Mount with rustimgmount**, **Unmount (rustimgmount)** and **Convert to** with its list
-  of formats. `rustimgmount install` adds these on their own.
+  of formats, plus **Create ISO image** on folders. `rustimgmount install` adds these on their own.
 
 Double-click associations add a bold **Mount** at the top of the menu as well; that is Windows showing
 the file type's default action. `setup --remove` takes all of it away.
@@ -412,7 +439,8 @@ Every push is built and tested on GitHub (`.github/workflows/ci.yml`), installer
 
 To release a version: set it in `Cargo.toml`, add a `## <version>` section to
 [CHANGELOG.md](CHANGELOG.md) saying what changed, and push a tag such as `v0.1.6`. GitHub then builds
-it and publishes a release with the installer and the zip, using that section as the release notes
+it and publishes a release with the installer, the zip and a file of their SHA-256 checksums, using that
+section as the release notes
 (`.github/workflows/release.yml`). Editing `CHANGELOG.md` later updates the notes of the releases
 already published.
 
@@ -452,6 +480,9 @@ Fixtures that need a real third-party writer are made by Rust examples:
 `convert.py` takes the images the other suites made, converts them between formats and back, and compares
 the result with the original byte for byte.
 
+`mkiso.py` makes ISO images from a folder with `rustimgmount create` and reads them back with its own
+small ISO 9660 and Joliet reader, comparing every file with the original.
+
 The MDX fixture's encryption is produced by an independent pure-Python AES, checked against the FIPS-197 test vector.
 
 ```
@@ -467,6 +498,7 @@ python tests/fixtures/emu.py target/release/rustimgmount.exe target/release/exam
 - `src/main.rs`: CLI, the mount and unmount flow, the cache
 - `src/vdisk.rs`: VirtDisk API wrapper, drive-letter discovery, device-path dismount
 - `src/convert.rs`: ISO, dynamic VHD and VHDX writers, free-space checks
+- `src/mkiso.rs`: `create`: the ISO 9660 and Joliet writer that makes an image from a folder
 - `src/export.rs`: `convert --to`: CSO/ZSO, CHD, BIN/CUE, CCD, GDI, raw, VMDK, VDI and QCOW2 writers, verification
 - `src/formats/`: format detection and readers
   - `cd.rs`: disc assembly, plus ISO/BIN/CUE/GDI/NRG/MDS/CCD/CDI

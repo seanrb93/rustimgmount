@@ -24,6 +24,8 @@ use windows::Win32::UI::Shell::{
 
 /// Class ID of the menu entry; the package manifest written by `rustimgmount setup` names it.
 const CLSID_MENU: GUID = GUID::from_u128(0x7b3f5e2a_9c41_4d6b_a8e3_52c1d0f4b916);
+/// Class ID of the entry shown on folders, "Create ISO image".
+const CLSID_FOLDER: GUID = GUID::from_u128(0x7b3f5e2a_9c41_4d6b_a8e3_52c1d0f4b917);
 
 static MODULE: AtomicIsize = AtomicIsize::new(0);
 
@@ -45,6 +47,8 @@ enum Verb {
     To(&'static str),
     /// The Convert dialog.
     More,
+    /// On folders: make an ISO image of the folder. An entry of its own, with no flyout.
+    CreateIso,
 }
 
 const SUBCOMMANDS: [Verb; 15] = [
@@ -223,12 +227,13 @@ impl IExplorerCommand_Impl for Command_Impl {
                 }
             ),
             Verb::More => "More formats and options...".to_string(),
+            Verb::CreateIso => "Create ISO image".to_string(),
         };
         unsafe { SHStrDupW(&HSTRING::from(title)) }
     }
 
     fn GetIcon(&self, _items: Ref<'_, IShellItemArray>) -> Result<PWSTR> {
-        if self.0 != Verb::Root {
+        if !matches!(self.0, Verb::Root | Verb::CreateIso) {
             return Err(E_NOTIMPL.into());
         }
         // The program's icon (resource 1 of rustimgmount.exe).
@@ -249,6 +254,7 @@ impl IExplorerCommand_Impl for Command_Impl {
         let files = paths(items);
         let show = match self.0 {
             Verb::Root | Verb::Separator | Verb::More => true,
+            Verb::CreateIso => !files.is_empty() && files.iter().all(|f| Path::new(f).is_dir()),
             Verb::Mount | Verb::Unmount => {
                 let (records, attached) = (records(), attached());
                 let mounted: Vec<Option<bool>> = files
@@ -279,6 +285,7 @@ impl IExplorerCommand_Impl for Command_Impl {
             Verb::Root | Verb::Separator => {}
             Verb::Mount => files.iter().for_each(|f| launch(&["mount", f, "--open"])),
             Verb::Unmount => files.iter().for_each(|f| launch(&["unmount", f])),
+            Verb::CreateIso => files.iter().for_each(|f| launch(&["create", f])),
             // Each goes into rustimgmountw's one queue, so they run one after another.
             Verb::To(id) => files.iter().for_each(|f| launch(&["convert", f, "--to", id])),
             // One dialog for the whole selection. Windows limits a command line to about
@@ -358,15 +365,16 @@ impl IEnumExplorerCommand_Impl for SubCommands_Impl {
     }
 }
 
+/// Makes the entry for one of the two class IDs.
 #[implement(IClassFactory)]
-struct Factory;
+struct Factory(Verb);
 
 impl IClassFactory_Impl for Factory_Impl {
     fn CreateInstance(&self, outer: Ref<'_, IUnknown>, iid: *const GUID, object: *mut *mut c_void) -> Result<()> {
         if outer.is_some() {
             return Err(CLASS_E_NOAGGREGATION.into());
         }
-        let command: IExplorerCommand = Command(Verb::Root).into();
+        let command: IExplorerCommand = Command(self.0).into();
         unsafe { command.query(iid, object).ok() }
     }
 
@@ -390,10 +398,14 @@ extern "system" fn DllGetClassObject(clsid: *const GUID, iid: *const GUID, objec
         return E_POINTER;
     }
     unsafe {
-        if *clsid != CLSID_MENU {
+        let verb = if *clsid == CLSID_MENU {
+            Verb::Root
+        } else if *clsid == CLSID_FOLDER {
+            Verb::CreateIso
+        } else {
             return CLASS_E_CLASSNOTAVAILABLE;
-        }
-        let factory: IClassFactory = Factory.into();
+        };
+        let factory: IClassFactory = Factory(verb).into();
         factory.query(iid, object)
     }
 }

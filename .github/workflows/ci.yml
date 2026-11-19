@@ -33,4 +33,5 @@ jobs:
           path: |
             dist/*.zip
             dist/*-setup.exe
+            dist/*-sha256.txt
           if-no-files-found: error

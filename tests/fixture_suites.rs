@@ -75,4 +75,6 @@ fn fixture_suites() {
     run(&py, &fixtures.join("more.py"), &[exe, &tools.join("mkfixtures.exe"), &data.join("more")]);
     // `convert --to`: round trips between formats, using the images made above.
     run(&py, &fixtures.join("convert.py"), &[exe, &data, &data.join("convert")]);
+    // `create`: an ISO image made from a folder, read back file by file.
+    run(&py, &fixtures.join("mkiso.py"), &[exe, &data.join("mkiso")]);
 }

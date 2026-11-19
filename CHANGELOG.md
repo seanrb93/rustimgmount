@@ -3,6 +3,15 @@
 What changed in each release of rustimgmount. The newest is first. Each section here
 becomes that version's release notes on GitHub.
 
+## 0.1.6
+
+- **Make an ISO from a folder.** Right-click a folder and choose "Create ISO image", use "Create ISO
+  from folder..." in the tray menu, or run `rustimgmount create <folder>`. The image keeps long and
+  non-English file names and holds files of any size, and it opens on Windows, macOS and Linux.
+- **Checksums.** Each release now has a `sha256.txt` file listing the SHA-256 checksum of every
+  download, so you can check that yours arrived intact.
+- Release notes no longer end with an automatic list of commits on some releases and not on others.
+
 ## 0.1.5
 
 - **Only formats that fit are offered.** The right-click menu now looks inside the image, as the Convert

@@ -24,6 +24,7 @@ const ID_AUTOSTART: usize = 12;
 const ID_EXIT: usize = 13;
 const ID_CONVERT: usize = 14;
 const ID_UNINSTALL: usize = 15;
+const ID_CREATE: usize = 16;
 /// Recently mounted images: ID_RECENT_BASE + index
 const ID_RECENT_BASE: usize = 500;
 /// Per-image items: ID_IMAGE_BASE + index * 4 + (0 = open, 1 = unmount)
@@ -155,6 +156,7 @@ unsafe fn show_menu(hwnd: HWND) {
     }
     RECENT = recent;
     append(menu, MF_STRING, ID_CONVERT, "Convert image...");
+    append(menu, MF_STRING, ID_CREATE, "Create ISO from folder...");
     append(menu, if imgs.is_empty() { MF_STRING | MF_GRAYED } else { MF_STRING }, ID_UNMOUNT_ALL, "Unmount all");
     append(menu, MF_SEPARATOR, 0, "");
     let auto = cli_output(&["autostart", "status"]).map(|s| s.trim() == "on").unwrap_or(false);
@@ -251,6 +253,14 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         // Its own process: the dialog and a long conversion shouldn't tie up the tray.
                         if let Ok(me) = std::env::current_exe() {
                             let _ = std::process::Command::new(me).args(["convert-ui", &p]).spawn();
+                        }
+                    }
+                }
+                ID_CREATE => {
+                    if let Some(p) = crate::convertui::browse_for(hwnd, "Folder to make an ISO image of") {
+                        // Its own process, which shows the progress and any error.
+                        if let Ok(me) = std::env::current_exe() {
+                            let _ = std::process::Command::new(me).args(["create", &p]).spawn();
                         }
                     }
                 }

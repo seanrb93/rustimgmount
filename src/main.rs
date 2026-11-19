@@ -7,6 +7,7 @@
 mod convert;
 mod export;
 mod formats;
+mod mkiso;
 mod source;
 mod state;
 mod util;
@@ -122,6 +123,18 @@ enum Cmd {
         /// After a successful --verify, move the original to the Recycle Bin.
         #[arg(long)]
         delete_original: bool,
+    },
+    /// Make an ISO image from the files in a folder.
+    Create {
+        folder: PathBuf,
+        /// File to write (default: "<folder name>.iso" next to the folder).
+        output: Option<PathBuf>,
+        /// The disc's name, as Explorer shows it (default: the folder's name).
+        #[arg(long, value_name = "NAME")]
+        label: Option<String>,
+        /// Replace the output file if it exists.
+        #[arg(long)]
+        overwrite: bool,
     },
     /// (internal) The formats these images can be converted to, as JSON.
     #[command(hide = true)]
@@ -272,6 +285,7 @@ fn run(cli: Cli) -> Result<i32> {
         Cmd::Convert { image, output, to, out_dir, overwrite, verify, delete_original } => {
             convert_cmd(&image, output, to, ConvertOpts { out_dir, overwrite, verify: verify || delete_original, delete_original })
         }
+        Cmd::Create { folder, output, label, overwrite } => create_cmd(&folder, output, label.as_deref(), overwrite),
         Cmd::Formats { images } => formats_cmd(&images),
         Cmd::Audio { image, output } => audio_cmd(&image, output),
         Cmd::Clean => {
@@ -1298,6 +1312,40 @@ fn convert_detected(
 
 /// What the Convert dialog offers for a selection of images: the formats every one of
 /// them can be converted to.
+/// `create`: an ISO image of a folder.
+fn create_cmd(folder: &Path, output: Option<PathBuf>, label: Option<&str>, overwrite: bool) -> Result<i32> {
+    let folder = std::path::absolute(folder)?;
+    if !folder.is_dir() {
+        bail!("{} is not a folder", folder.display());
+    }
+    let out = match output {
+        Some(o) => std::path::absolute(o)?,
+        None => {
+            let (Some(parent), Some(name)) = (folder.parent(), folder.file_name()) else {
+                bail!("give the name of the ISO file to write, for example: rustimgmount create {} disc.iso", folder.display());
+            };
+            let name = name.to_string_lossy();
+            // Without a name from the user, never write over something: "Photos (2).iso".
+            let mut out = parent.join(format!("{name}.iso"));
+            let mut n = 2;
+            while out.exists() && !overwrite {
+                out = parent.join(format!("{name} ({n}).iso"));
+                n += 1;
+            }
+            out
+        }
+    };
+    if out.is_dir() {
+        bail!("{} is a folder; give the name of the ISO file to write", out.display());
+    }
+    let made = mkiso::create(&folder, &out, label, overwrite)?;
+    println!("Created {} ({} file(s), {} folder(s), {})", out.display(), made.files, made.folders, util::human(made.bytes));
+    for n in &made.notes {
+        println!("note: {n}");
+    }
+    Ok(0)
+}
+
 fn formats_cmd(images: &[PathBuf]) -> Result<i32> {
     let mut common: Option<Vec<&'static export::Format>> = None;
     let mut errors = Vec::new();

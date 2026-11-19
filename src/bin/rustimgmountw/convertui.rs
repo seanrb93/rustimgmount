@@ -524,7 +524,12 @@ unsafe fn checked(hwnd: HWND, id: i32) -> bool {
 }
 
 unsafe fn browse(owner: HWND) -> Option<String> {
-    let title = wide("Folder for the converted images");
+    browse_for(owner, "Folder for the converted images")
+}
+
+/// Let the user pick a folder.
+pub unsafe fn browse_for(owner: HWND, title: &str) -> Option<String> {
+    let title = wide(title);
     let mut bi: BROWSEINFOW = std::mem::zeroed();
     bi.hwndOwner = owner;
     bi.lpszTitle = title.as_ptr();

@@ -36,6 +36,8 @@ Download ``rustimgmount-$Version-setup.exe`` below and run it. It installs for y
 
 Without the installer: unpack the zip anywhere and run ``rustimgmount.exe setup``.
 
+To check that a download arrived intact, compare the output of ``Get-FileHash <file>`` in PowerShell with the line for that file in ``rustimgmount-$Version-sha256.txt``.
+
 Needs Windows 10 or 11, 64-bit. The [README](https://github.com/seanrb93/rustimgmount#readme) explains what it does and how to use it.
 "@
 
