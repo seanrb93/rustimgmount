@@ -47,9 +47,16 @@ enum Verb {
     To(&'static str),
     /// The Convert dialog.
     More,
-    /// On folders: make an ISO image of the folder. An entry of its own, with no flyout.
+    /// The top-level entry on folders, which opens a flyout of its own.
+    FolderRoot,
+    /// On folders: make an ISO image of the folder straight away.
     CreateIso,
+    /// On folders: the Create dialog (format, disc name, where to save).
+    CreateMore,
 }
+
+/// The flyout on folders.
+const FOLDER_SUBCOMMANDS: [Verb; 2] = [Verb::CreateIso, Verb::CreateMore];
 
 const SUBCOMMANDS: [Verb; 15] = [
     Verb::Mount,
@@ -215,7 +222,7 @@ fn launch(args: &[&str]) {
 impl IExplorerCommand_Impl for Command_Impl {
     fn GetTitle(&self, _items: Ref<'_, IShellItemArray>) -> Result<PWSTR> {
         let title = match self.0 {
-            Verb::Root => "rustimgmount".to_string(),
+            Verb::Root | Verb::FolderRoot => "rustimgmount".to_string(),
             Verb::Mount => "Mount".to_string(),
             Verb::Unmount => "Unmount".to_string(),
             Verb::Separator => String::new(),
@@ -228,12 +235,13 @@ impl IExplorerCommand_Impl for Command_Impl {
             ),
             Verb::More => "More formats and options...".to_string(),
             Verb::CreateIso => "Create ISO image".to_string(),
+            Verb::CreateMore => "Create disc image: more options...".to_string(),
         };
         unsafe { SHStrDupW(&HSTRING::from(title)) }
     }
 
     fn GetIcon(&self, _items: Ref<'_, IShellItemArray>) -> Result<PWSTR> {
-        if !matches!(self.0, Verb::Root | Verb::CreateIso) {
+        if !matches!(self.0, Verb::Root | Verb::FolderRoot) {
             return Err(E_NOTIMPL.into());
         }
         // The program's icon (resource 1 of rustimgmount.exe).
@@ -254,7 +262,7 @@ impl IExplorerCommand_Impl for Command_Impl {
         let files = paths(items);
         let show = match self.0 {
             Verb::Root | Verb::Separator | Verb::More => true,
-            Verb::CreateIso => !files.is_empty() && files.iter().all(|f| Path::new(f).is_dir()),
+            Verb::FolderRoot | Verb::CreateIso | Verb::CreateMore => !files.is_empty() && files.iter().all(|f| Path::new(f).is_dir()),
             Verb::Mount | Verb::Unmount => {
                 let (records, attached) = (records(), attached());
                 let mounted: Vec<Option<bool>> = files
@@ -282,10 +290,16 @@ impl IExplorerCommand_Impl for Command_Impl {
     fn Invoke(&self, items: Ref<'_, IShellItemArray>, _ctx: Ref<'_, IBindCtx>) -> Result<()> {
         let files = paths(items);
         match self.0 {
-            Verb::Root | Verb::Separator => {}
+            Verb::Root | Verb::FolderRoot | Verb::Separator => {}
             Verb::Mount => files.iter().for_each(|f| launch(&["mount", f, "--open"])),
             Verb::Unmount => files.iter().for_each(|f| launch(&["unmount", f])),
             Verb::CreateIso => files.iter().for_each(|f| launch(&["create", f])),
+            // One dialog for all the folders selected.
+            Verb::CreateMore => {
+                let mut args: Vec<&str> = vec!["create-ui"];
+                args.extend(files.iter().map(String::as_str));
+                launch(&args);
+            }
             // Each goes into rustimgmountw's one queue, so they run one after another.
             Verb::To(id) => files.iter().for_each(|f| launch(&["convert", f, "--to", id])),
             // One dialog for the whole selection. Windows limits a command line to about
@@ -313,30 +327,31 @@ impl IExplorerCommand_Impl for Command_Impl {
 
     fn GetFlags(&self) -> Result<u32> {
         Ok(match self.0 {
-            Verb::Root => ECF_HASSUBCOMMANDS.0,
+            Verb::Root | Verb::FolderRoot => ECF_HASSUBCOMMANDS.0,
             Verb::Separator => ECF_ISSEPARATOR.0,
             _ => ECF_DEFAULT.0,
         } as u32)
     }
 
     fn EnumSubCommands(&self) -> Result<IEnumExplorerCommand> {
-        if self.0 != Verb::Root {
-            return Err(E_NOTIMPL.into());
+        match self.0 {
+            Verb::Root => Ok(SubCommands(&SUBCOMMANDS, Cell::new(0)).into()),
+            Verb::FolderRoot => Ok(SubCommands(&FOLDER_SUBCOMMANDS, Cell::new(0)).into()),
+            _ => Err(E_NOTIMPL.into()),
         }
-        Ok(SubCommands(Cell::new(0)).into())
     }
 }
 
 #[implement(IEnumExplorerCommand)]
-struct SubCommands(Cell<usize>);
+struct SubCommands(&'static [Verb], Cell<usize>);
 
 impl IEnumExplorerCommand_Impl for SubCommands_Impl {
     fn Next(&self, count: u32, out: *mut Option<IExplorerCommand>, fetched: *mut u32) -> HRESULT {
         let mut given = 0u32;
         unsafe {
-            while given < count && self.0.get() < SUBCOMMANDS.len() {
-                out.add(given as usize).write(Some(Command(SUBCOMMANDS[self.0.get()]).into()));
-                self.0.set(self.0.get() + 1);
+            while given < count && self.1.get() < self.0.len() {
+                out.add(given as usize).write(Some(Command(self.0[self.1.get()]).into()));
+                self.1.set(self.1.get() + 1);
                 given += 1;
             }
             if !fetched.is_null() {
@@ -351,17 +366,17 @@ impl IEnumExplorerCommand_Impl for SubCommands_Impl {
     }
 
     fn Skip(&self, count: u32) -> Result<()> {
-        self.0.set((self.0.get() + count as usize).min(SUBCOMMANDS.len()));
+        self.1.set((self.1.get() + count as usize).min(self.0.len()));
         Ok(())
     }
 
     fn Reset(&self) -> Result<()> {
-        self.0.set(0);
+        self.1.set(0);
         Ok(())
     }
 
     fn Clone(&self) -> Result<IEnumExplorerCommand> {
-        Ok(SubCommands(Cell::new(self.0.get())).into())
+        Ok(SubCommands(self.0, Cell::new(self.1.get())).into())
     }
 }
 
@@ -401,7 +416,7 @@ extern "system" fn DllGetClassObject(clsid: *const GUID, iid: *const GUID, objec
         let verb = if *clsid == CLSID_MENU {
             Verb::Root
         } else if *clsid == CLSID_FOLDER {
-            Verb::CreateIso
+            Verb::FolderRoot
         } else {
             return CLASS_E_CLASSNOTAVAILABLE;
         };

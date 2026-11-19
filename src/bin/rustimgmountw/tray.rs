@@ -25,6 +25,8 @@ const ID_EXIT: usize = 13;
 const ID_CONVERT: usize = 14;
 const ID_UNINSTALL: usize = 15;
 const ID_CREATE: usize = 16;
+const ID_UPDATE: usize = 17;
+const RELEASES: &str = "https://github.com/seanrb93/rustimgmount/releases/latest";
 /// Recently mounted images: ID_RECENT_BASE + index
 const ID_RECENT_BASE: usize = 500;
 /// Per-image items: ID_IMAGE_BASE + index * 4 + (0 = open, 1 = unmount)
@@ -162,6 +164,7 @@ unsafe fn show_menu(hwnd: HWND) {
     let auto = cli_output(&["autostart", "status"]).map(|s| s.trim() == "on").unwrap_or(false);
     append(menu, MF_STRING | if auto { MF_CHECKED } else { MF_UNCHECKED }, ID_AUTOSTART, "Start with Windows");
     append(menu, MF_SEPARATOR, 0, "");
+    append(menu, MF_STRING, ID_UPDATE, "Check for updates...");
     append(menu, MF_STRING, ID_UNINSTALL, "Uninstall rustimgmount...");
     append(menu, MF_STRING, ID_EXIT, "Exit");
     IMAGES = imgs;
@@ -171,6 +174,59 @@ unsafe fn show_menu(hwnd: HWND) {
     TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, pt.x, pt.y, 0, hwnd, null());
     PostMessageW(hwnd, WM_NULL, 0, 0);
     DestroyMenu(menu);
+}
+
+/// The version of the newest release, from where GitHub sends "releases/latest". Nothing
+/// about this PC is sent; it is one request, made only when the user asks.
+fn latest_version() -> Option<String> {
+    let curl = std::path::PathBuf::from(std::env::var_os("SystemRoot")?).join("System32").join("curl.exe");
+    let out = std::process::Command::new(curl)
+        .args(["-s", "-o", "NUL", "-m", "15", "-w", "%{redirect_url}", RELEASES])
+        .creation_flags(0x0800_0000)
+        .output()
+        .ok()?;
+    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let (_, tag) = url.rsplit_once("/tag/")?;
+    let version = tag.trim_start_matches('v');
+    (!version.is_empty() && version.chars().all(|c| c.is_ascii_digit() || c == '.')).then(|| version.to_string())
+}
+
+/// Is version `a` newer than `b`? ("0.1.10" is newer than "0.1.9".)
+fn newer(a: &str, b: &str) -> bool {
+    let parts = |v: &str| v.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
+    parts(a) > parts(b)
+}
+
+fn check_for_updates() {
+    let mine = env!("CARGO_PKG_VERSION");
+    let ask = |text: &str| unsafe {
+        let (t, c) = (wide(text), wide("rustimgmount"));
+        MessageBoxW(null_mut(), t.as_ptr(), c.as_ptr(), MB_YESNO | MB_ICONINFORMATION | MB_SETFOREGROUND) == IDYES
+    };
+    let open = match latest_version() {
+        Some(latest) if newer(&latest, mine) => ask(&format!("Version {latest} is available (you have {mine}).\n\nOpen the download page?")),
+        Some(_) => {
+            message_box(&format!("You have the latest version ({mine})."), false);
+            false
+        }
+        None => ask(&format!("Couldn't reach GitHub to check (you have version {mine}).\n\nOpen the releases page in your browser?")),
+    };
+    if open {
+        let (verb, url) = (wide("open"), wide(RELEASES));
+        unsafe { ShellExecuteW(null_mut(), verb.as_ptr(), url.as_ptr(), null(), null(), SW_SHOWNORMAL) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn versions_compare_by_number() {
+        assert!(super::newer("0.1.10", "0.1.9"));
+        assert!(super::newer("0.2", "0.1.9"));
+        assert!(super::newer("1.0.0", "0.9.9"));
+        assert!(!super::newer("0.1.7", "0.1.7"));
+        assert!(!super::newer("0.1.6", "0.1.7"));
+    }
 }
 
 /// Run a rustimgmount command in the background so the tray stays responsive.
@@ -257,12 +313,15 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     }
                 }
                 ID_CREATE => {
-                    if let Some(p) = crate::convertui::browse_for(hwnd, "Folder to make an ISO image of") {
-                        // Its own process, which shows the progress and any error.
+                    if let Some(p) = crate::convertui::browse_for(hwnd, "Folder to make a disc image of") {
+                        // Its own process: the dialog and a long job shouldn't tie up the tray.
                         if let Ok(me) = std::env::current_exe() {
-                            let _ = std::process::Command::new(me).args(["create", &p]).spawn();
+                            let _ = std::process::Command::new(me).args(["create-ui", &p]).spawn();
                         }
                     }
+                }
+                ID_UPDATE => {
+                    std::thread::spawn(check_for_updates);
                 }
                 id if (ID_RECENT_BASE..ID_RECENT_BASE + 20).contains(&id) => {
                     #[allow(static_mut_refs)]

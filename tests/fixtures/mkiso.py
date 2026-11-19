@@ -2,7 +2,7 @@
 a small ISO 9660 / Joliet reader, checking that every file comes out as it went in.
 
 Usage: mkiso.py <rustimgmount.exe> <work dir>"""
-import os, shutil, struct, subprocess, sys
+import ctypes, os, shutil, struct, subprocess, sys
 
 EXE, D = sys.argv[1], sys.argv[2]
 shutil.rmtree(D, ignore_errors=True)
@@ -129,6 +129,126 @@ def check(iso, expect, hidden=()):
         return str(e)
     return None
 
+# ---- UDF reader
+
+def crc16(data):
+    c = 0
+    for b in data:
+        c ^= b << 8
+        for _ in range(8):
+            c = ((c << 1) ^ 0x1021) & 0xFFFF if c & 0x8000 else (c << 1) & 0xFFFF
+    return c
+
+def tagged(img, sector, want, at=None):
+    """The descriptor at `sector` (or at byte offset `at`), after checking its tag."""
+    off = sector * 2048 if at is None else at
+    ident, version, checksum, _, _, crc, crc_len, location = struct.unpack_from("<HHBBHHHI", img, off)
+    assert ident == want, "UDF: expected descriptor %d, found %d at sector %d" % (want, ident, sector)
+    assert version == 2, "UDF: descriptor version %d" % version
+    head = img[off:off + 16]
+    assert sum(head[:4] + head[5:]) & 255 == checksum, "UDF: wrong tag checksum in descriptor %d" % want
+    body = img[off + 16:off + 16 + crc_len]
+    assert crc16(body) == crc, "UDF: wrong CRC in descriptor %d" % want
+    return img[off:off + 16 + crc_len], location
+
+def d_chars(b):
+    if not b: return ""
+    assert b[0] in (8, 16), "UDF: unknown character width %d" % b[0]
+    return b[1:].decode("latin-1") if b[0] == 8 else b[1:].decode("utf-16-be")
+
+def udf_tree(img):
+    """{path: bytes or None for a folder} of the UDF file system, plus its volume name."""
+    assert img[19 * 2048 + 1:19 * 2048 + 6] == b"BEA01" and img[20 * 2048 + 1:20 * 2048 + 6] == b"NSR02" and img[21 * 2048 + 1:21 * 2048 + 6] == b"TEA01", "UDF: no recognition sequence"
+    last = len(img) // 2048 - 1
+    anchor, loc = tagged(img, 256, 2)
+    assert loc == 256 and tagged(img, last, 2)[1] == last, "UDF: anchor in the wrong place"
+    length, start = struct.unpack_from("<II", anchor, 16)
+    part = fsd_at = label = None
+    for copy in (start, struct.unpack_from("<I", anchor, 28)[0]):
+        seen = []
+        for s in range(copy, copy + length // 2048):
+            ident = struct.unpack_from("<H", img, s * 2048)[0]
+            d, loc = tagged(img, s, ident)
+            assert loc == s, "UDF: a descriptor says it is at %d but is at %d" % (loc, s)
+            seen.append(ident)
+            if ident == 5: part = struct.unpack_from("<II", d, 188)
+            if ident == 6:
+                fsd_at = struct.unpack_from("<I", d, 252)[0]
+                label = d_chars(d[84:84 + d[211]])
+                assert struct.unpack_from("<I", d, 212)[0] == 2048, "UDF: block size"
+            if ident == 8: break
+        assert seen == [1, 4, 5, 6, 7, 8], "UDF: volume descriptors %s" % seen
+    lvid, _ = tagged(img, 64, 9)
+    assert struct.unpack_from("<I", lvid, 28)[0] == 1, "UDF: volume not marked closed"
+    p0, plen = part
+    assert p0 + plen == last, "UDF: the partition does not end before the last sector"
+    fsd, loc = tagged(img, p0 + fsd_at, 256)
+    assert loc == fsd_at
+    root = struct.unpack_from("<I", fsd, 404)[0]
+    files = {}
+    counts = [0, 0]
+    def entry(lbn):
+        fe, loc = tagged(img, p0 + lbn, 261)
+        assert loc == lbn, "UDF: a file entry says it is at block %d but is at %d" % (loc, lbn)
+        size = struct.unpack_from("<Q", fe, 56)[0]
+        l_ea, l_ad = struct.unpack_from("<II", fe, 168)
+        data = b""
+        for i in range(l_ad // 8):
+            n, pos = struct.unpack_from("<II", fe, 176 + l_ea + i * 8)
+            assert n >> 30 == 0, "UDF: an extent that is not recorded data"
+            data += img[(p0 + pos) * 2048:(p0 + pos) * 2048 + n]
+        assert len(data) == size, "UDF: a file's extents add up to %d bytes, not %d" % (len(data), size)
+        return fe[27], data, struct.unpack_from("<Q", fe, 160)[0]
+    ids = set()
+    def walk(lbn, parent, prefix):
+        kind, data, unique = entry(lbn)
+        assert kind == 4, "UDF: a folder's entry is not a folder"
+        counts[1] += 1
+        first_block = struct.unpack_from("<I", tagged(img, p0 + lbn, 261)[0], 180)[0]
+        pos, first = 0, True
+        while pos < len(data):
+            n_id, l_iu = data[pos + 19], struct.unpack_from("<H", data, pos + 36)[0]
+            size = (38 + l_iu + n_id + 3) & ~3
+            fid, loc = tagged(img, 0, 257, at=(p0 + first_block) * 2048 + pos)
+            assert loc == first_block + pos // 2048, "UDF: a directory record carries the wrong block number"
+            flags, target = data[pos + 18], struct.unpack_from("<I", data, pos + 24)[0]
+            name = d_chars(data[pos + 38 + l_iu:pos + 38 + l_iu + n_id])
+            if first:
+                assert flags & 8 and target == parent and not name, "UDF: a folder does not start with its parent"
+            elif flags & 2:
+                files[prefix + name] = None
+                walk(target, lbn, prefix + name + "/")
+            else:
+                kind, content, unique = entry(target)
+                assert kind == 5, "UDF: a file's entry is not a file"
+                assert unique not in ids, "UDF: two files share an id"
+                ids.add(unique)
+                files[prefix + name] = content
+                counts[0] += 1
+            first = False
+            pos += size
+    walk(root, root, "")
+    n_files, n_dirs = struct.unpack_from("<II", lvid, 120)
+    assert (n_files, n_dirs) == tuple(counts), "UDF: the volume says %d files and %d folders, the tree has %s" % (n_files, n_dirs, counts)
+    return files, label
+
+def check_udf(iso, expect, label=None):
+    with open(iso, "rb") as f: img = f.read()
+    try:
+        got, name = udf_tree(img)
+    except AssertionError as e:
+        return str(e)
+    if set(got) != set(expect): return "UDF names differ: %s" % [n[:40] for n in sorted(set(got) ^ set(expect))[:4]]
+    bad = [p for p in expect if got[p] != expect[p]]
+    if bad: return "UDF contents differ: %s" % bad[:4]
+    if label is not None and name != label: return "UDF volume name %r, not %r" % (name, label)
+    return None
+
+def has_udf(iso):
+    with open(iso, "rb") as f:
+        f.seek(20 * 2048 + 1)
+        return f.read(5) == b"NSR02"
+
 # ---- a folder with a bit of everything
 
 src = os.path.join(D, "Holiday photos")
@@ -218,10 +338,107 @@ write(os.path.join(odd, "ok.txt"), b"fine")
 code, lines = create(odd)
 err = "failed: %s" % lines if code else check(os.path.join(D, "odd.iso"), {"a_b.txt": b"semicolon", "ok.txt": b"fine"})
 report("';' in a name", err or (None if any("';'" in l for l in lines) else "no note about the changed name"), "written as '_', with a note")
-write("\\\\?\\" + os.path.abspath(os.path.join(odd, "y" * 104 + ".txt")), b"too long")
-code, lines = create(odd, os.path.join(D, "odd2.iso"))
-left = [f for f in os.listdir(D) if f.startswith("odd2")]
-report("name too long", None if code != 0 and any("longer than 103" in l for l in lines) and not left else "exit %d, files %s: %s" % (code, left, lines), "refused, nothing left behind")
+# ---- names too long for Joliet: the image gets the UDF file system as well
+
+def long_path(*parts):
+    return "\\\\?\\" + os.path.abspath(os.path.join(*parts))
+longs = os.path.join(D, "long names")
+long_expect = {
+    "short.txt": b"short",
+    "L" * 150 + ".txt": b"long latin",
+    "L" * 150 + ".dat": b"long latin, same start",
+    "\u65e5" * 110 + ".txt": b"long cjk",
+    "semi;colon.txt": b"semicolon",
+    "sub": None,
+    "sub/" + "d" * 200: None,
+    "sub/" + "d" * 200 + "/inside.bin": pattern(5000, 9),
+}
+for path, data in long_expect.items():
+    full = long_path(longs, *path.split("/"))
+    if data is None: os.makedirs(full, exist_ok=True)
+    else:
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "wb") as f: f.write(data)
+long_iso = os.path.join(D, "long names.iso")
+code, lines = create(longs)
+err = "failed: %s" % lines if code else check_udf(long_iso, long_expect, "long names")
+if not err:
+    # The older trees carry the same files under shortened names.
+    with open(long_iso, "rb") as f: img = f.read()
+    joliet, _ = tree(img, descriptors(img)["joliet"], True)
+    if sorted(v for v in joliet.values() if v is not None) != sorted(v for v in long_expect.values() if v is not None): err = "the Joliet tree holds different files"
+    elif max(len(p.split("/")[-1].encode("utf-16-le")) // 2 for p in joliet) > 103: err = "a Joliet name is longer than 103 characters"
+    elif not any("UDF" in l for l in lines): err = "no note about UDF"
+report("names over 103 characters", err, "kept whole in a UDF tree")
+
+report("no UDF unless needed", "the ordinary image has UDF" if has_udf(iso) else None)
+forced = os.path.join(D, "forced udf.iso")
+code, lines = create(src, forced, "--udf")
+report("--udf on the big folder", ("failed: %s" % lines) if code else check_udf(forced, expect, "Holiday photos") or check(forced, expect, hidden=["readme.txt"]), "all three trees read back")
+code, lines = create(src, forced, "--udf", "--overwrite", env=env)
+report("UDF files in several extents", ("failed: %s" % lines) if code else check_udf(forced, expect))
+
+for name, what in (("y" * 251 + ".txt", "255 Latin characters"), ("\u65e5" * 124 + ".txt", "128 other characters")):
+    too = os.path.join(D, "too long")
+    shutil.rmtree(long_path(too), ignore_errors=True)
+    os.makedirs(too)
+    with open(long_path(too, name), "wb") as f: f.write(b"too long")
+    code, lines = create(too)
+    left = [f for f in os.listdir(D) if f.startswith("too long.")]
+    report("refuses " + what, None if code != 0 and any("too long" in l for l in lines) and not left else "exit %d, files %s: %s" % (code, left, lines[-2:]), "nothing left behind")
+
+# ---- files that can't be read
+
+locked = os.path.join(D, "locked")
+write(os.path.join(locked, "fine.txt"), b"fine")
+write(os.path.join(locked, "in use.dat"), b"held open by another program")
+k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+k32.CreateFileW.restype = ctypes.c_void_p
+k32.CreateFileW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p]
+k32.CloseHandle.argtypes = [ctypes.c_void_p]
+# Opened for writing with no sharing, as a program working on the file would.
+handle = k32.CreateFileW(os.path.join(locked, "in use.dat"), 0xC0000000, 0, None, 3, 0, None)
+try:
+    code, lines = create(locked)
+    left = [f for f in os.listdir(D) if f.startswith("locked.")]
+    ok = code != 0 and any("in use.dat" in l for l in lines) and any("--skip-unreadable" in l for l in lines) and not left
+    report("unreadable file", None if ok else "exit %d, files %s: %s" % (code, left, lines), "refused before writing, and named")
+    code, lines = create(locked, "--skip-unreadable")
+    err = "failed: %s" % lines if code else check(os.path.join(D, "locked.iso"), {"fine.txt": b"fine"})
+    report("--skip-unreadable", err or (None if any("in use.dat" in l for l in lines) else "the file left out is not named"), "left out, and named")
+finally:
+    k32.CloseHandle(handle)
+
+# ---- packed formats, and where the result goes
+
+def convert_back(packed, name):
+    back = os.path.join(D, name)
+    r = subprocess.run([EXE, "convert", packed, back], capture_output=True, text=True)
+    return back if r.returncode == 0 else None
+for fmt, ext in (("cso", "cso"), ("zso", "zso"), ("chd", "chd"), ("chd-zstd", "chd")):
+    packed = os.path.join(D, "packed %s.%s" % (fmt, ext))
+    code, lines = create(src, packed, "--to", fmt, "--label", "Packed")
+    back = None if code else convert_back(packed, "packed %s back.iso" % fmt)
+    err = "failed: %s" % lines if code else "could not be converted back" if not back else check(back, expect, hidden=["readme.txt"])
+    if not err:
+        with open(back, "rb") as f:
+            f.seek(17 * 2048 + 40)
+            if f.read(32).decode("utf-16-be").rstrip() != "Packed": err = "the disc name was lost"
+    stray = [f for f in os.listdir(D) if "temp" in f or f.endswith(".partial")]
+    report("folder to " + fmt, err or ("left behind: %s" % stray if stray else None), "converts back to the same files")
+code, lines = create(src, "--to", "cso")
+report("--to names the result", None if code == 0 and os.path.exists(os.path.join(D, "Holiday photos.cso")) else "no 'Holiday photos.cso': %s" % lines)
+code, lines = create(src, os.path.join(D, "by extension.cso"))
+with open(os.path.join(D, "by extension.cso"), "rb") as f: magic = f.read(4)
+report("format from the output name", None if code == 0 and magic == b"CISO" else "exit %d, starts with %r" % (code, magic))
+code, lines = create(src, "--to", "vhd")
+report("refuses a disk format", None if code != 0 and any("iso, cso" in l for l in lines) else "exit %d: %s" % (code, lines))
+elsewhere = os.path.join(D, "elsewhere", "deeper")
+code, lines = create(src, "--out-dir", elsewhere)
+report("--out-dir", None if code == 0 and os.path.exists(os.path.join(elsewhere, "Holiday photos.iso")) else "exit %d: %s" % (code, lines))
+# Explorer passes a drive as "D:\" and the backslash swallows the closing quote.
+code, lines = create(src + '"', os.path.join(D, "quote.iso"))
+report("stray quote from Explorer", None if code == 0 else "exit %d: %s" % (code, lines))
 
 empty = os.path.join(D, "nothing here")
 os.makedirs(empty)

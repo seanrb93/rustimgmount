@@ -243,6 +243,15 @@ pub fn disk_ids() -> &'static DiskIds {
     })
 }
 
+/// The name of the volume whose root folder is `root` ("D:\\"), as Explorer shows it.
+pub fn volume_label(root: &Path) -> Option<String> {
+    let w = wide(root);
+    let mut name = [0u16; 261];
+    let ok = unsafe { GetVolumeInformationW(w.as_ptr(), name.as_mut_ptr(), name.len() as u32, null_mut(), null_mut(), null_mut(), null_mut(), 0) };
+    let end = name.iter().position(|&c| c == 0).unwrap_or(0);
+    (ok != 0).then(|| String::from_utf16_lossy(&name[..end]))
+}
+
 /// Free space, in bytes, on the volume holding `dir`.
 pub fn free_space(dir: &Path) -> Option<u64> {
     let w = wide(dir);

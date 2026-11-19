@@ -124,7 +124,7 @@ enum Cmd {
         #[arg(long)]
         delete_original: bool,
     },
-    /// Make an ISO image from the files in a folder.
+    /// Make an ISO image from the files in a folder, or from everything on a drive.
     Create {
         folder: PathBuf,
         /// File to write (default: "<folder name>.iso" next to the folder).
@@ -135,6 +135,19 @@ enum Cmd {
         /// Replace the output file if it exists.
         #[arg(long)]
         overwrite: bool,
+        /// Pack the image: cso, zso, chd or chd-zstd (default: a plain iso).
+        #[arg(long, value_name = "FORMAT")]
+        to: Option<String>,
+        /// Folder for the result (default: next to the folder; the desktop for a drive).
+        #[arg(long, value_name = "FOLDER", conflicts_with = "output")]
+        out_dir: Option<PathBuf>,
+        /// Leave out files that can't be read (in use by another program, no permission)
+        /// and say which. Without this, nothing is written when there are any.
+        #[arg(long)]
+        skip_unreadable: bool,
+        /// Add the UDF file system even when no name is long enough to need it.
+        #[arg(long)]
+        udf: bool,
     },
     /// (internal) The formats these images can be converted to, as JSON.
     #[command(hide = true)]
@@ -148,7 +161,11 @@ enum Cmd {
     /// Delete cached conversions that are no longer mounted.
     Clean,
     /// Add "Mount with rustimgmount" / "Unmount" to the Explorer right-click menu (current user).
-    Install,
+    Install {
+        /// Only the entries on drives, which the Windows 11 menu package can't provide.
+        #[arg(long, hide = true)]
+        drives_only: bool,
+    },
     /// Remove the Explorer right-click menu entries.
     Uninstall,
     /// Make double-clicking a supported image mount it (current user).
@@ -216,7 +233,7 @@ fn main() {
 
 fn run(cli: Cli) -> Result<i32> {
     state::migrate_legacy();
-    if !matches!(cli.cmd, Cmd::Watch { .. } | Cmd::Install | Cmd::Uninstall | Cmd::Setup { .. } | Cmd::Autostart { .. }) && winutil::repair_shell_if_moved() {
+    if !matches!(cli.cmd, Cmd::Watch { .. } | Cmd::Install { .. } | Cmd::Uninstall | Cmd::Setup { .. } | Cmd::Autostart { .. }) && winutil::repair_shell_if_moved() {
         eprintln!("note: rustimgmount was moved; the Explorer right-click menu now points at its new location");
     }
     // Housekeeping on every command: drop records of ejected mounts (deleting their
@@ -224,7 +241,7 @@ fn run(cli: Cli) -> Result<i32> {
     // without the grace period. The background watcher only needs its own check.
     if !matches!(
         cli.cmd,
-        Cmd::Install | Cmd::Uninstall | Cmd::Associate { .. } | Cmd::Unassociate | Cmd::Watch { .. } | Cmd::Clean | Cmd::Setup { .. } | Cmd::Autostart { .. }
+        Cmd::Install { .. } | Cmd::Uninstall | Cmd::Associate { .. } | Cmd::Unassociate | Cmd::Watch { .. } | Cmd::Clean | Cmd::Setup { .. } | Cmd::Autostart { .. }
     ) {
         let _ = clean_cache(false);
         export::sweep(); // half-written files of a cancelled `convert`
@@ -285,7 +302,9 @@ fn run(cli: Cli) -> Result<i32> {
         Cmd::Convert { image, output, to, out_dir, overwrite, verify, delete_original } => {
             convert_cmd(&image, output, to, ConvertOpts { out_dir, overwrite, verify: verify || delete_original, delete_original })
         }
-        Cmd::Create { folder, output, label, overwrite } => create_cmd(&folder, output, label.as_deref(), overwrite),
+        Cmd::Create { folder, output, label, overwrite, to, out_dir, skip_unreadable, udf } => {
+            create_cmd(&folder, output, CreateOpts { label, overwrite, to, out_dir, skip_unreadable, udf })
+        }
         Cmd::Formats { images } => formats_cmd(&images),
         Cmd::Audio { image, output } => audio_cmd(&image, output),
         Cmd::Clean => {
@@ -293,7 +312,11 @@ fn run(cli: Cli) -> Result<i32> {
             println!("Removed {n} cached file(s).");
             Ok(0)
         }
-        Cmd::Install => {
+        Cmd::Install { drives_only: true } => {
+            winutil::install_folder_menu(&["Drive"])?;
+            Ok(0)
+        }
+        Cmd::Install { .. } => {
             winutil::install_shell()?;
             println!("Explorer context menu installed for: {}", winutil::SHELL_EXTS.join(", "));
             println!("(On Windows 11 it is under \"Show more options\" / Shift+right-click.)");
@@ -1004,6 +1027,7 @@ fn setup(no_menu: bool, no_associate: bool, plain_icons: bool) -> Result<i32> {
     let dest = winutil::install_dir();
     std::fs::create_dir_all(&dest)?;
     let installing_from_elsewhere = !state::same_file(&src_dir, &dest);
+    let tray_was_running = winutil::tray_running();
     if installing_from_elsewhere {
         install_file(&here, &dest.join("rustimgmount.exe"))?;
         let w = src_dir.join("rustimgmountw.exe");
@@ -1051,6 +1075,8 @@ fn setup(no_menu: bool, no_associate: bool, plain_icons: bool) -> Result<i32> {
                 Ok(()) => {
                     modern = true;
                     winutil::uninstall_shell()?;
+                    // The package can't put an entry on drives; those keep the classic one.
+                    run_installed(&exe, &["install", "--drives-only"])?;
                     println!("Right-click menu: \"rustimgmount\" (Mount, Unmount, Convert) added to the Windows 11 menu.");
                 }
                 Err(e) => println!(
@@ -1069,6 +1095,13 @@ fn setup(no_menu: bool, no_associate: bool, plain_icons: bool) -> Result<i32> {
     if w.exists() {
         winutil::create_shortcut(&winutil::start_menu_shortcut(), &w, "--tray", "Shows mounted disk images in the notification area")?;
         println!("Start Menu: \"rustimgmount\" opens the tray app.");
+    }
+    // A tray app started before this update is still the old program: start the new one.
+    if installing_from_elsewhere && tray_was_running && w.exists() {
+        winutil::stop_tray();
+        if !winutil::tray_running() {
+            winutil::start_tray(&dest);
+        }
     }
     println!("\nSetup complete. Undo it any time with `rustimgmount setup --remove`.");
     Ok(0)
@@ -1163,6 +1196,15 @@ struct ConvertOpts {
     overwrite: bool,
     verify: bool,
     delete_original: bool,
+}
+
+struct CreateOpts {
+    label: Option<String>,
+    overwrite: bool,
+    to: Option<String>,
+    out_dir: Option<PathBuf>,
+    skip_unreadable: bool,
+    udf: bool,
 }
 
 fn convert_cmd(image: &Path, output: Option<PathBuf>, to: Option<String>, opts: ConvertOpts) -> Result<i32> {
@@ -1310,42 +1352,91 @@ fn convert_detected(
     Ok(written)
 }
 
-/// What the Convert dialog offers for a selection of images: the formats every one of
-/// them can be converted to.
-/// `create`: an ISO image of a folder.
-fn create_cmd(folder: &Path, output: Option<PathBuf>, label: Option<&str>, overwrite: bool) -> Result<i32> {
-    let folder = std::path::absolute(folder)?;
+/// `create`: a disc image of a folder (or of everything on a drive).
+fn create_cmd(folder: &Path, output: Option<PathBuf>, c: CreateOpts) -> Result<i32> {
+    use export::{Format, Target};
+    // Explorer passes a drive as "D:\", and the backslash swallows the closing quote.
+    let folder = PathBuf::from(folder.to_string_lossy().trim_end_matches('"'));
+    let folder = std::path::absolute(&folder)?;
     if !folder.is_dir() {
         bail!("{} is not a folder", folder.display());
+    }
+    // An ISO, or one of the formats an ISO can be packed into.
+    let format = match (&c.to, &output) {
+        (Some(t), _) => Format::parse(t).ok_or_else(|| anyhow!("unknown format '{t}'; choose one of: iso, cso, zso, chd, chd-zstd"))?,
+        (None, Some(o)) => Format::parse(&formats::ext(o)).unwrap_or(Format::of(Target::Iso)),
+        (None, None) => Format::of(Target::Iso),
+    };
+    if !matches!(format.target, Target::Iso | Target::Cso | Target::Zso | Target::Chd) {
+        bail!("a folder can be made into iso, cso, zso, chd or chd-zstd, not {}", format.id);
     }
     let out = match output {
         Some(o) => std::path::absolute(o)?,
         None => {
-            let (Some(parent), Some(name)) = (folder.parent(), folder.file_name()) else {
-                bail!("give the name of the ISO file to write, for example: rustimgmount create {} disc.iso", folder.display());
+            // Next to the folder and named after it. A drive has no "next to": its image
+            // goes on the desktop, named after the drive.
+            let (dir, name) = match (folder.parent(), folder.file_name()) {
+                (Some(parent), Some(name)) => (parent.to_owned(), name.to_string_lossy().into_owned()),
+                _ => {
+                    let home = PathBuf::from(std::env::var_os("USERPROFILE").ok_or_else(|| anyhow!("give the name of the file to write"))?);
+                    let desktop = home.join("Desktop");
+                    let letter: String = folder.to_string_lossy().chars().take(1).collect();
+                    let label = vdisk::volume_label(&folder).filter(|l| !l.is_empty()).unwrap_or_else(|| format!("Drive {letter}"));
+                    (if desktop.is_dir() { desktop } else { home }, label)
+                }
             };
-            let name = name.to_string_lossy();
+            let dir = match &c.out_dir {
+                Some(d) => {
+                    std::fs::create_dir_all(d).with_context(|| format!("creating {}", d.display()))?;
+                    std::path::absolute(d)?
+                }
+                None => dir,
+            };
             // Without a name from the user, never write over something: "Photos (2).iso".
-            let mut out = parent.join(format!("{name}.iso"));
+            let ext = format.target.ext();
+            let mut out = dir.join(format!("{name}.{ext}"));
             let mut n = 2;
-            while out.exists() && !overwrite {
-                out = parent.join(format!("{name} ({n}).iso"));
+            while out.exists() && !c.overwrite {
+                out = dir.join(format!("{name} ({n}).{ext}"));
                 n += 1;
             }
             out
         }
     };
     if out.is_dir() {
-        bail!("{} is a folder; give the name of the ISO file to write", out.display());
+        bail!("{} is a folder; give the name of the file to write", out.display());
     }
-    let made = mkiso::create(&folder, &out, label, overwrite)?;
-    println!("Created {} ({} file(s), {} folder(s), {})", out.display(), made.files, made.folders, util::human(made.bytes));
+    let opts = mkiso::Options { label: c.label.as_deref(), skip_unreadable: c.skip_unreadable, udf: c.udf };
+    let made = if format.target == Target::Iso {
+        let mut job = export::Job::new(c.overwrite, Vec::new());
+        let tmp = job.add(&out)?;
+        let made = mkiso::write(&folder, &tmp, &[out.clone(), tmp.clone()], &opts)?;
+        job.commit()?;
+        made
+    } else {
+        if out.exists() && !c.overwrite {
+            bail!("{} already exists", out.display());
+        }
+        // Made as an ISO first, in a temporary file beside the result, then packed.
+        let mut job = export::Job::new(true, Vec::new());
+        let mut name = out.file_name().unwrap_or_default().to_os_string();
+        name.push(".rustimgmount-temp.iso");
+        let tmp = job.add(&out.with_file_name(name))?;
+        let made = mkiso::write(&folder, &tmp, &[out.clone(), tmp.clone()], &opts)?;
+        let det = formats::detect(&tmp);
+        export::run(&tmp, det, format, &out, export::Opts { overwrite: c.overwrite, verify: false })?;
+        made // dropping `job` deletes the temporary ISO
+    };
+    let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(made.bytes);
+    println!("Created {} ({} file(s), {} folder(s), {})", out.display(), made.files, made.folders, util::human(size));
     for n in &made.notes {
         println!("note: {n}");
     }
     Ok(0)
 }
 
+/// What the Convert dialog offers for a selection of images: the formats every one of
+/// them can be converted to.
 fn formats_cmd(images: &[PathBuf]) -> Result<i32> {
     let mut common: Option<Vec<&'static export::Format>> = None;
     let mut errors = Vec::new();

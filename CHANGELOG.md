@@ -3,6 +3,22 @@
 What changed in each release of rustimgmount. The newest is first. Each section here
 becomes that version's release notes on GitHub.
 
+## 0.1.8
+
+- **A dialog for making disc images.** "Create disc image: more options..." on folders, and "Create ISO
+  from folder..." in the tray menu, let you choose the format, the disc's name and where to save it.
+- **Folder straight to CSO or CHD**, from that dialog or with `rustimgmount create <folder> --to chd`.
+- **Whole drives.** "Create ISO image" is offered on drives as well as folders.
+- **Long file names.** Names over 103 characters used to stop an image being made. Now the image gets
+  the UDF file system too, which holds names of up to 254 characters.
+- **Files that can't be read** are found before anything is written, and can be left out with a tick
+  box or `--skip-unreadable`; they are listed at the end.
+- **Check for updates...** in the tray menu.
+- Fixed: after updating with `rustimgmount setup`, a tray app that was already running stayed the old
+  version until restarted.
+- Fixed: a program reading the output of `rustimgmount setup` could wait for ever when setup restarted
+  the tray app.
+
 ## 0.1.7
 
 - **"Create ISO image" behaves like converting.** Several folders are done one after another in one

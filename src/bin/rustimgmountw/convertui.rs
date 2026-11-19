@@ -158,9 +158,16 @@ pub struct Job {
     pub delete: bool,
     #[serde(default)]
     pub overwrite: bool,
-    /// Not a conversion: `image` is a folder to make an ISO image of.
+    /// Not a conversion: `image` is a folder (or drive) to make a disc image of. `to` is
+    /// then iso, cso, chd or chd-zstd; empty means iso.
     #[serde(default)]
     pub create: bool,
+    /// When creating: the disc's name, if not the folder's.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// When creating: leave out files that can't be read.
+    #[serde(default)]
+    pub skip: bool,
 }
 
 struct Queue {
@@ -176,6 +183,8 @@ struct Queue {
     finished: Mutex<usize>,
     /// How many of the finished jobs made an ISO image from a folder.
     created: Mutex<usize>,
+    /// (folder name, what was said) for images that were made, but with something to tell.
+    notes: Mutex<Vec<(String, String)>>,
 }
 
 fn file_name(path: &str) -> String {
@@ -187,6 +196,15 @@ fn run_job(q: &Queue, job: &Job, cli: &Path) -> Option<String> {
     let mut cmd = Command::new(cli);
     if job.create {
         cmd.args(["create", &job.image]);
+        if !job.to.is_empty() {
+            cmd.args(["--to", &job.to]);
+        }
+        if let Some(l) = &job.label {
+            cmd.args(["--label", l]);
+        }
+        if job.skip {
+            cmd.arg("--skip-unreadable");
+        }
     } else {
         cmd.args(["convert", &job.image, "--to", &job.to]);
     }
@@ -239,9 +257,17 @@ fn run_job(q: &Queue, job: &Job, cli: &Path) -> Option<String> {
     let stdout = t_out.join().unwrap_or_default();
     let status = q.child.lock().unwrap().take().and_then(|mut c| c.wait().ok());
     if status.is_some_and(|s| s.success()) {
+        // Made, but with something left out or changed: that is said at the end.
+        if let (true, Some(at)) = (job.create, stdout.find("note: ")) {
+            q.notes.lock().unwrap().push((file_name(&job.image), stdout[at..].replace("note: ", "").trim().to_string()));
+        }
         return None;
     }
     let msg = summarize(&format!("{stdout}\n{text}"));
+    // A refusal that lists files (names too long, files that can't be read) is shown whole.
+    if let Some(at) = msg.find("error: ").filter(|_| job.create) {
+        return Some(msg[at + 7..].to_string());
+    }
     Some(msg.lines().last().unwrap_or("failed").trim_start_matches("error: ").to_string())
 }
 
@@ -325,6 +351,7 @@ pub fn enqueue(jobs: &[Job]) -> i32 {
         failures: Mutex::new(Vec::new()),
         finished: Mutex::new(0),
         created: Mutex::new(0),
+        notes: Mutex::new(Vec::new()),
     });
     let start = Instant::now();
     let worker = {
@@ -417,6 +444,18 @@ pub fn enqueue(jobs: &[Job]) -> i32 {
         message_box(&text, true);
         return super::ERROR_SHOWN;
     }
+    let notes = q.notes.lock().unwrap().clone();
+    if !notes.is_empty() {
+        let mut text = String::new();
+        for (name, note) in notes.iter().take(4) {
+            text.push_str(&format!("The image of {name} was made, with this to note:\n\n{note}\n\n"));
+        }
+        if notes.len() > 4 {
+            text.push_str(&format!("...and {} more images with notes.", notes.len() - 4));
+        }
+        message_box(text.trim_end(), false);
+        return 0;
+    }
     // Something long finished while the user was probably doing something else: say so.
     if start.elapsed() > Duration::from_secs(10) || done > 1 {
         notify(&match (done, all_created, mixed) {
@@ -489,6 +528,11 @@ struct Prefs {
     verify: bool,
     #[serde(default)]
     overwrite: bool,
+    /// The Create dialog: the format and "leave out files that can't be read" used last.
+    #[serde(default)]
+    create_format: Option<String>,
+    #[serde(default)]
+    create_skip: bool,
 }
 
 impl Prefs {
@@ -737,7 +781,7 @@ fn dialog(files: &[String]) -> Vec<Job> {
         prefs.save();
         files
             .iter()
-            .map(|f| Job { image: f.clone(), to: choice.id.clone(), out_dir: DIALOG.out_dir.clone(), verify: verify || delete, delete, create: false, overwrite })
+            .map(|f| Job { image: f.clone(), to: choice.id.clone(), out_dir: DIALOG.out_dir.clone(), verify: verify || delete, delete, overwrite, ..Default::default() })
             .collect()
     }
 }
@@ -759,4 +803,206 @@ pub fn pick(files: &[String]) -> i32 {
         return 0;
     }
     enqueue(&jobs)
+}
+
+// ---------------------------------------------------------------- the Create dialog
+
+const ID_LABEL: i32 = 110;
+const ID_SKIP: i32 = 111;
+
+/// The formats a folder can be made into: (`--to` name, what the dialog shows).
+const CREATE_FORMATS: [(&str, &str); 4] = [
+    ("iso", "ISO: a standard disc image (.iso)"),
+    ("cso", "CSO: a compressed ISO (.cso)"),
+    ("chd", "CHD: compressed, for emulators (.chd)"),
+    ("chd-zstd", "CHD with Zstandard: faster to read (.chd)"),
+];
+
+struct CreateDialog {
+    out_dir: Option<String>,
+    /// Set when "Create" is pressed: (format index, disc name, leave out unreadable files).
+    result: Option<(usize, String, bool)>,
+    closed: bool,
+}
+
+static mut CREATE: CreateDialog = CreateDialog { out_dir: None, result: None, closed: false };
+
+const NEXT_TO: &str = "Next to the folder (the desktop for a drive)";
+
+#[allow(static_mut_refs)]
+unsafe extern "system" fn create_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    match msg {
+        WM_COMMAND => {
+            match (wparam & 0xFFFF) as i32 {
+                ID_BROWSE => {
+                    if let Some(dir) = browse_for(hwnd, "Folder for the disc image") {
+                        let w = wide(&dir);
+                        SetWindowTextW(GetDlgItem(hwnd, ID_FOLDER), w.as_ptr());
+                        CREATE.out_dir = Some(dir);
+                        EnableWindow(GetDlgItem(hwnd, ID_SAME), 1);
+                    }
+                }
+                ID_SAME => {
+                    let w = wide(NEXT_TO);
+                    SetWindowTextW(GetDlgItem(hwnd, ID_FOLDER), w.as_ptr());
+                    CREATE.out_dir = None;
+                    EnableWindow(GetDlgItem(hwnd, ID_SAME), 0);
+                }
+                1 => {
+                    let sel = SendMessageW(GetDlgItem(hwnd, ID_FORMAT), CB_GETCURSEL, 0, 0).max(0) as usize;
+                    let mut buf = [0u16; 64];
+                    let n = GetWindowTextW(GetDlgItem(hwnd, ID_LABEL), buf.as_mut_ptr(), buf.len() as i32).max(0) as usize;
+                    CREATE.result = Some((sel, String::from_utf16_lossy(&buf[..n]).trim().to_string(), checked(hwnd, ID_SKIP)));
+                    DestroyWindow(hwnd);
+                }
+                2 => {
+                    DestroyWindow(hwnd);
+                }
+                _ => {}
+            }
+            0
+        }
+        WM_CLOSE => {
+            DestroyWindow(hwnd);
+            0
+        }
+        WM_DESTROY => {
+            CREATE.closed = true;
+            0
+        }
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+/// Show the Create dialog for these folders (or drives). Returns the images to make.
+#[allow(static_mut_refs)]
+fn create_dialog(folders: &[String]) -> Vec<Job> {
+    unsafe {
+        windows_sys::Win32::System::Com::CoInitializeEx(null(), 2); // apartment-threaded, for the folder picker
+        let hinst = GetModuleHandleW(null());
+        let class = wide("rustimgmount_create");
+        let wc = WNDCLASSW {
+            lpfnWndProc: Some(create_proc),
+            hInstance: hinst,
+            lpszClassName: class.as_ptr(),
+            hbrBackground: 16 as _, // COLOR_BTNFACE + 1
+            hCursor: LoadCursorW(null_mut(), IDC_ARROW),
+            hIcon: app_icon(),
+            ..std::mem::zeroed()
+        };
+        RegisterClassW(&wc);
+        CREATE = CreateDialog { out_dir: None, result: None, closed: false };
+
+        let dpi = windows_sys::Win32::UI::HiDpi::GetDpiForSystem().max(96) as i32;
+        let s = |v: i32| v * dpi / 96;
+        let (cw, ch) = (s(460), s(248));
+        let style = WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_MINIMIZEBOX;
+        let mut rc = RECT { left: 0, top: 0, right: cw, bottom: ch };
+        AdjustWindowRectEx(&mut rc, style, 0, WS_EX_DLGMODALFRAME);
+        let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
+        let (sx, sy) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+        let title = wide("Create disc image");
+        let hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, class.as_ptr(), title.as_ptr(), style, (sx - w) / 2, (sy - h) / 2, w, h, null_mut(), null_mut(), hinst, null());
+        if hwnd.is_null() {
+            return Vec::new();
+        }
+        let mut ncm: NONCLIENTMETRICSW = std::mem::zeroed();
+        ncm.cbSize = std::mem::size_of::<NONCLIENTMETRICSW>() as u32;
+        SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, ncm.cbSize, &mut ncm as *mut _ as _, 0);
+        let font: HFONT = CreateFontIndirectW(&ncm.lfMessageFont);
+        let add = |class: &str, text: &str, style: u32, x: i32, y: i32, w: i32, h: i32, id: i32| -> HWND {
+            let (c, t) = (wide(class), wide(text));
+            let ctl = CreateWindowExW(0, c.as_ptr(), t.as_ptr(), WS_CHILD | WS_VISIBLE | style, s(x), s(y), s(w), s(h), hwnd, id as isize as HMENU, hinst, null());
+            SendMessageW(ctl, WM_SETFONT, font as usize, 1);
+            ctl
+        };
+        // A drive ("D:\") has no name of its own to show.
+        let shown = |f: &String| Path::new(f).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| format!("drive {}", f.trim_end_matches('\\')));
+        let what = if folders.len() == 1 { shown(&folders[0]) } else { format!("{} folders", folders.len()) };
+        add("STATIC", &format!("Make a disc image of {what}"), 0x80 | 0x4000 /* SS_NOPREFIX | SS_ENDELLIPSIS */, 16, 14, 428, 20, -1);
+        add("STATIC", "Format:", 0, 16, 50, 90, 20, -1);
+        let combo = add("COMBOBOX", "", (CBS_DROPDOWNLIST as u32) | WS_VSCROLL | WS_TABSTOP, 110, 46, 334, 400, ID_FORMAT);
+        for (_, label) in CREATE_FORMATS {
+            let l = wide(label);
+            SendMessageW(combo, CB_ADDSTRING, 0, l.as_ptr() as isize);
+        }
+        let mut prefs = Prefs::load();
+        SendMessageW(combo, CB_SETCURSEL, CREATE_FORMATS.iter().position(|(id, _)| Some(*id) == prefs.create_format.as_deref()).unwrap_or(0), 0);
+        add("STATIC", "Disc name:", 0, 16, 86, 90, 20, -1);
+        // Each image of a selection is named after its own folder.
+        let label = add("EDIT", "", (ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP, 110, 82, 334, 23, ID_LABEL);
+        SendMessageW(label, EM_SETLIMITTEXT, 32, 0);
+        if folders.len() == 1 {
+            let cue = wide("The folder's name");
+            SendMessageW(label, 0x1501 /* EM_SETCUEBANNER */, 1, cue.as_ptr() as isize);
+        } else {
+            let t = wide("Each folder's own name");
+            SetWindowTextW(label, t.as_ptr());
+            EnableWindow(label, 0);
+        }
+        add("STATIC", "Save in:", 0, 16, 122, 90, 20, -1);
+        add("EDIT", NEXT_TO, (ES_READONLY as u32) | (ES_AUTOHSCROLL as u32) | WS_BORDER, 110, 118, 334, 23, ID_FOLDER);
+        add("BUTTON", "Choose folder...", WS_TABSTOP, 110, 148, 120, 26, ID_BROWSE);
+        let same = add("BUTTON", "Use the usual place", WS_TABSTOP, 238, 148, 140, 26, ID_SAME);
+        EnableWindow(same, 0);
+        add("BUTTON", "Leave out files that can't be read, and say which", (BS_AUTOCHECKBOX as u32) | WS_TABSTOP, 16, 186, 428, 20, ID_SKIP);
+        add("BUTTON", "Create", (BS_DEFPUSHBUTTON as u32) | WS_TABSTOP, 258, 212, 90, 26, 1);
+        add("BUTTON", "Cancel", WS_TABSTOP, 354, 212, 90, 26, 2);
+        SendMessageW(GetDlgItem(hwnd, ID_SKIP), BM_SETCHECK, prefs.create_skip as usize, 0);
+        ShowWindow(hwnd, SW_SHOW);
+        SetForegroundWindow(hwnd);
+        SetFocus(combo);
+
+        let mut msg: MSG = std::mem::zeroed();
+        while !CREATE.closed && GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
+            if IsDialogMessageW(hwnd, &msg) == 0 {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        DeleteObject(font);
+        let Some((sel, label, skip)) = CREATE.result.clone() else { return Vec::new() };
+        let format = CREATE_FORMATS.get(sel).map(|f| f.0).unwrap_or("iso");
+        // (The folder is not remembered: the usual place is next to each folder.)
+        prefs.create_format = Some(format.to_string());
+        prefs.create_skip = skip;
+        prefs.save();
+        folders
+            .iter()
+            .map(|f| Job {
+                image: f.clone(),
+                to: format.to_string(),
+                out_dir: CREATE.out_dir.clone(),
+                create: true,
+                label: Some(label.clone()).filter(|l| !l.is_empty() && folders.len() == 1),
+                skip,
+                ..Default::default()
+            })
+            .collect()
+    }
+}
+
+/// `rustimgmountw create-ui <folder>...`: one dialog for everything selected, then the queue.
+pub fn pick_create(folders: &[String]) -> i32 {
+    let mine: Vec<PathBuf> = folders.iter().filter_map(|f| drop_request("create", f)).collect();
+    let Some(owner) = own("create", &mine) else { return 0 };
+    let mut jobs = Vec::new();
+    loop {
+        let selected: Vec<String> = take_burst("create").into_iter().map(|s| folder_arg(&s)).filter(|s| !s.is_empty()).collect();
+        if selected.is_empty() {
+            break;
+        }
+        jobs.extend(create_dialog(&selected));
+    }
+    drop(owner);
+    if jobs.is_empty() {
+        return 0;
+    }
+    enqueue(&jobs)
+}
+
+/// A folder as Explorer passes it. A drive arrives as `D:\"`: the backslash of "D:\"
+/// swallows the closing quote.
+pub fn folder_arg(arg: &str) -> String {
+    arg.trim().trim_end_matches('"').to_string()
 }

@@ -1,6 +1,6 @@
 [package]
 name = "rustimgmount"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 description = "Mount common disk images (ISO, VHD/VHDX, IMG, BIN/CUE, NRG, MDF, VMDK, VDI, QCOW2, ...) on Windows"
 license = "MIT"

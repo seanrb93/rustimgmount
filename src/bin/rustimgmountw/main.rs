@@ -286,7 +286,7 @@ fn main() {
                     verify: has("--verify"),
                     delete: has("--delete-original"),
                     overwrite: has("--overwrite"),
-                    create: false,
+                    ..Default::default()
                 }]),
                 None => convertui::pick(&args[1..2]),
             };
@@ -295,8 +295,10 @@ fn main() {
         // "Create ISO image" on a folder joins the same queue, so several folders are
         // done one after another. (With an output name or options it runs on its own.)
         Some("create") if args.len() == 2 => {
-            std::process::exit(convertui::enqueue(&[convertui::Job { image: args[1].clone(), create: true, ..Default::default() }]));
+            std::process::exit(convertui::enqueue(&[convertui::Job { image: convertui::folder_arg(&args[1]), create: true, ..Default::default() }]));
         }
+        // The Create dialog: format, disc name and where to save.
+        Some("create-ui") if args.len() > 1 => std::process::exit(convertui::pick_create(&args[1..])),
         _ => {}
     }
     // A file dropped onto the exe (or "Open with") arrives as the only argument.

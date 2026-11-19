@@ -33,11 +33,16 @@ function MenuPresent {
     [bool](Get-AppxPackage -Name rustimgmount.ShellMenu) -or
         ((Test-Path "HKCU:\Software\Classes\SystemFileAssociations\.iso\shell\rustimgmount.mount") -and (Test-Path "HKCU:\Software\Classes\Directory\shell\rustimgmount.createiso"))
 }
+# Drives have the classic entries with either menu.
+function DriveMenuPresent { (Test-Path "HKCU:\Software\Classes\Drive\shell\rustimgmount.createiso") -and (Test-Path "HKCU:\Software\Classes\Drive\shell\rustimgmount.createmore") }
 function MenuGone {
     -not (Get-AppxPackage -Name rustimgmount.ShellMenu) -and
         -not (Test-Path "HKCU:\Software\Classes\SystemFileAssociations\.iso\shell\rustimgmount.mount") -and
         -not (Test-Path "HKCU:\Software\Classes\SystemFileAssociations\.iso\shell\rustimgmount.convert") -and
-        -not (Test-Path "HKCU:\Software\Classes\Directory\shell\rustimgmount.createiso")
+        -not (Test-Path "HKCU:\Software\Classes\Directory\shell\rustimgmount.createiso") -and
+        -not (Test-Path "HKCU:\Software\Classes\Directory\shell\rustimgmount.createmore") -and
+        -not (Test-Path "HKCU:\Software\Classes\Drive\shell\rustimgmount.createiso") -and
+        -not (Test-Path "HKCU:\Software\Classes\Drive\shell\rustimgmount.createmore")
 }
 
 function Install([string]$Tasks) {
@@ -57,6 +62,7 @@ function CheckInstalled {
     Check "the install folder is on the user's PATH" (OnPath)
     Check "Start Menu shortcut" (Test-Path $shortcut)
     Check "right-click menu" (MenuPresent)
+    Check "right-click entries on drives" (DriveMenuPresent)
     $apps = Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall" -ErrorAction SilentlyContinue |
         ForEach-Object { Get-ItemProperty $_.PSPath } | Where-Object { $_.DisplayName -like "rustimgmount*" }
     Check "one entry in Settings > Apps" (@($apps).Count -eq 1) "(found $(@($apps).Count))"
@@ -67,6 +73,8 @@ function CheckInstalled {
     Set-Content (Join-Path $work "folder\hello.txt") "hello"
     if (Test-Path $exe) { & $exe create (Join-Path $work "folder") | Out-Null }
     Check "the installed program makes an ISO image" (Test-Path (Join-Path $work "folder.iso"))
+    if (Test-Path $exe) { & $exe create (Join-Path $work "folder") --to chd | Out-Null }
+    Check "the installed program makes a CHD from a folder" (Test-Path (Join-Path $work "folder.chd"))
     Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
 }
 

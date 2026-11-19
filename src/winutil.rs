@@ -154,6 +154,7 @@ pub fn register_modern_menu(dir: &std::path::Path) -> Result<()> {
     let types: String = SHELL_EXTS
         .iter()
         .map(|e| format!("            <desktop5:ItemType Type=\".{e}\"><desktop5:Verb Id=\"RustImgMount\" Clsid=\"{MENU_CLSID}\" /></desktop5:ItemType>\n"))
+        // (Windows rejects a manifest that names "Drive" here, so drives keep the classic entry.)
         .chain([format!(
             "            <desktop5:ItemType Type=\"Directory\"><desktop5:Verb Id=\"RustImgMountIso\" Clsid=\"{FOLDER_CLSID}\" /></desktop5:ItemType>\n"
         )])
@@ -260,10 +261,31 @@ pub fn tray_running() -> bool {
     true
 }
 
+/// Ask the running tray app to close, and wait a moment for it to do so.
+pub fn stop_tray() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowExW, FindWindowW, PostMessageW, HWND_MESSAGE, WM_CLOSE};
+    let class = wide("rustimgmount_tray");
+    unsafe {
+        let mut hwnd = FindWindowW(class.as_ptr(), null());
+        if hwnd.is_null() {
+            hwnd = FindWindowExW(HWND_MESSAGE, null_mut(), class.as_ptr(), null());
+        }
+        if hwnd.is_null() {
+            return;
+        }
+        PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    }
+    for _ in 0..40 {
+        if !tray_running() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 /// Start the tray app from `dir`, detached.
 pub fn start_tray(dir: &std::path::Path) {
-    use std::os::windows::process::CommandExt;
-    let _ = std::process::Command::new(dir.join("rustimgmountw.exe")).arg("--tray").creation_flags(0x0000_0008 | 0x0800_0000).spawn();
+    let _ = spawn_detached_exe(&dir.join("rustimgmountw.exe"), &["--tray".to_string()]);
 }
 
 pub fn unregister_modern_menu() {
@@ -313,17 +335,23 @@ pub fn process_alive(pid: u32) -> bool {
 /// Start this executable in the background with `args`: no window, no console, and no
 /// inherited handles (so it can't keep a caller's output pipe open after we exit).
 pub fn spawn_detached(args: &[String]) -> Result<()> {
+    spawn_detached_exe(&std::env::current_exe()?, args)
+}
+
+/// Start `exe` on its own: no window, and none of this process's handles. (A child that
+/// inherited them would keep this process's output pipe open for as long as it runs, and
+/// whoever reads that output would wait just as long.)
+pub fn spawn_detached_exe(exe: &std::path::Path, args: &[String]) -> Result<()> {
     use windows_sys::Win32::System::Threading::{
         CreateProcessW, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, DETACHED_PROCESS, PROCESS_INFORMATION, STARTUPINFOW,
     };
-    let exe = std::env::current_exe()?;
     let mut cmd = quote_arg(&exe.to_string_lossy());
     for a in args {
         cmd.push(' ');
         cmd.push_str(&quote_arg(a));
     }
     let mut cmd_w = wide(&cmd);
-    let app = wide(&exe);
+    let app = wide(exe);
     let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
     si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
@@ -786,9 +814,12 @@ fn remove_legacy_verbs() {
 /// The "Convert to" submenu.
 const CONVERT_ID: &str = "rustimgmount.convert";
 /// Bumped when the menu's layout changes, so an installed menu gets refreshed.
-const MENU_VERSION: &str = "3";
-/// The entry on folders, which makes an ISO image of the folder.
-const FOLDER_KEY: &str = r"Software\Classes\Directory\shell\rustimgmount.createiso";
+const MENU_VERSION: &str = "4";
+/// The entries on folders and on drives: (key, label, what rustimgmountw is asked to do).
+/// The first makes an ISO image straight away; the second opens the Create dialog.
+const FOLDER_VERBS: [(&str, &str, &str); 2] =
+    [("rustimgmount.createiso", "Create ISO image", "create"), ("rustimgmount.createmore", "Create disc image: more options...", "create-ui")];
+const FOLDER_KINDS: [&str; 2] = ["Directory", "Drive"];
 
 /// Formats offered directly under "Convert to" for a file extension. `None` for
 /// extensions used for both discs and disks (.img, .raw, ...): those get a single
@@ -841,6 +872,32 @@ fn install_convert_menu(ext: &str, icon: &str) -> Result<()> {
     Ok(())
 }
 
+/// "Create ISO image" and the Create dialog on folders and/or drives ("Directory", "Drive").
+pub fn install_folder_menu(kinds: &[&str]) -> Result<()> {
+    let exe = std::env::current_exe()?;
+    for kind in kinds {
+        for (id, label, verb) in FOLDER_VERBS {
+            // The dialog lives in rustimgmountw.exe.
+            if verb == "create-ui" && launcher().is_none() {
+                continue;
+            }
+            let key = format!(r"Software\Classes\{kind}\shell\{id}");
+            reg_set(HKEY_CURRENT_USER, &key, Some("MUIVerb"), label)?;
+            reg_set(HKEY_CURRENT_USER, &key, Some("Icon"), &format!("{},0", exe.to_string_lossy()))?;
+            reg_set(HKEY_CURRENT_USER, &format!(r"{key}\command"), None, &ui_command(verb)?)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn uninstall_folder_menu(kinds: &[&str]) {
+    for kind in kinds {
+        for (id, _, _) in FOLDER_VERBS {
+            reg_delete_tree(HKEY_CURRENT_USER, &format!(r"Software\Classes\{kind}\shell\{id}"));
+        }
+    }
+}
+
 pub fn install_shell() -> Result<()> {
     remove_legacy_verbs();
     let exe = std::env::current_exe()?;
@@ -854,9 +911,7 @@ pub fn install_shell() -> Result<()> {
             reg_set(HKEY_CURRENT_USER, &format!(r"{base}\command"), None, &ui_command(cmd)?)?;
         }
     }
-    reg_set(HKEY_CURRENT_USER, FOLDER_KEY, Some("MUIVerb"), "Create ISO image")?;
-    reg_set(HKEY_CURRENT_USER, FOLDER_KEY, Some("Icon"), &format!("{exe_s},0"))?;
-    reg_set(HKEY_CURRENT_USER, &format!(r"{FOLDER_KEY}\command"), None, &ui_command("create")?)?;
+    install_folder_menu(&FOLDER_KINDS)?;
     Ok(())
 }
 
@@ -867,6 +922,6 @@ pub fn uninstall_shell() -> Result<()> {
             reg_delete_tree(HKEY_CURRENT_USER, &format!(r"Software\Classes\SystemFileAssociations\.{ext}\shell\{id}"));
         }
     }
-    reg_delete_tree(HKEY_CURRENT_USER, FOLDER_KEY);
+    uninstall_folder_menu(&FOLDER_KINDS);
     Ok(())
 }

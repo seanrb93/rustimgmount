@@ -16,7 +16,8 @@ no administrator rights to install.
 - **Convert between formats** from the right-click menu: a CUE/BIN to a CHD, a CHD back to CUE/BIN, an
   ISO to CSO, a VMDK to VHDX, and so on. Select many files to convert them in one go; it can check each
   result against the original.
-- **Make an ISO from a folder:** right-click the folder and choose **Create ISO image**.
+- **Make an ISO from a folder or a drive:** right-click it and choose **Create ISO image**. It can go
+  straight to CSO or CHD as well.
 - **Open images inside archives** (zip, 7z, rar, gz, ...) without unpacking them yourself.
 - **Use it your way:** double-click, the right-click menu, a tray icon, or the command line.
 
@@ -48,7 +49,8 @@ file of that type > Open with > Choose another app > rustimgmount > Always. You 
 | Mount an image | Double-click it, or right-click > **rustimgmount** > **Mount** |
 | Unmount it | Right-click the drive > **Eject**, or right-click the image > **rustimgmount** > **Unmount** |
 | Convert an image | Right-click > **rustimgmount** > **Convert to ...**, or **More formats and options...** |
-| Make an ISO from a folder | Right-click the folder > **Create ISO image** |
+| Make an ISO from a folder | Right-click the folder > **rustimgmount** > **Create ISO image**, or **more options...** for CSO or CHD |
+| Check for a newer version | Tray icon > **Check for updates...** |
 | See what's mounted | Click the rustimgmount icon in the notification area (start it from the Start Menu) |
 
 On Windows 11 the **rustimgmount** entry is in the main right-click menu when Developer Mode is on, and
@@ -193,7 +195,7 @@ rustimgmount unmount <image | E: | all> [--everything]   # "all" = images rustim
 rustimgmount list
 rustimgmount info <image>               # show the format, tracks and plan, without mounting
 rustimgmount convert <image> --to FORMAT [output] [--verify] [--delete-original] ...   # see "Converting" below
-rustimgmount create <folder> [output.iso] [--label NAME] [--overwrite]   # see "Making an ISO from a folder" below
+rustimgmount create <folder or drive> [output] [--to FORMAT] [--label NAME] ...   # see "Making a disc image from a folder" below
 rustimgmount clean                      # delete cached conversions that are not mounted
 rustimgmount install                    # add "Mount", "Unmount", "Convert to" and "Create ISO image" to Explorer's right-click menu
 rustimgmount uninstall
@@ -232,8 +234,10 @@ Explorer caches icons, so new ones can take a sign-out to appear. The icons are 
 
 **Tray app.** The Start Menu entry (or `rustimgmountw --tray`) puts a disc icon in the notification area.
 Click it for a menu of what's mounted (open or unmount each image), **Mount image...**, **Mount recent**
-(the last ten images you mounted), **Convert image...** (opens the Convert dialog), **Create ISO from folder...**, **Unmount all**,
-**Start with Windows** and **Uninstall rustimgmount...**.
+(the last ten images you mounted), **Convert image...** (opens the Convert dialog), **Create ISO from folder...** (opens the Create dialog), **Unmount all**,
+**Start with Windows**, **Check for updates...** and **Uninstall rustimgmount...**. Checking for
+updates asks GitHub which release is newest, only when you click it, and offers to open the download
+page; nothing is downloaded or installed by itself.
 
 **Progress.** Mounting from Explorer, the tray or the right-click menu shows no window when it's quick. If
 it takes more than about 1.5 seconds (converting a big image), a small progress dialog appears with a
@@ -330,27 +334,48 @@ converted.
   complete. Cancelling, a failure or a full drive deletes it. An existing file is only replaced with
   `--overwrite`, and a conversion never writes over the image it's reading.
 
-### Making an ISO from a folder
+### Making a disc image from a folder
 
-Right-click a folder and choose **Create ISO image**, or pick **Create ISO from folder...** in the tray
-menu. The image appears next to the folder, named after it: `Photos` becomes `Photos.iso`. If that name
-is taken, the new image is called `Photos (2).iso`, so nothing is written over. From a terminal:
+Right-click a folder and open **rustimgmount**:
+
+- **Create ISO image** makes the image straight away. It appears next to the folder, named after it:
+  `Photos` becomes `Photos.iso`. If that name is taken, the new image is called `Photos (2).iso`, so
+  nothing is written over.
+- **Create disc image: more options...** opens a dialog where you choose the format (ISO, CSO or CHD),
+  the disc's name, where to save it, and whether to leave out files that can't be read. It remembers
+  the format and that last choice.
+
+The tray menu's **Create ISO from folder...** opens the same dialog. From a terminal:
 
 ```
-rustimgmount create <folder> [output.iso] [--label NAME] [--overwrite]
+rustimgmount create <folder or drive> [output] [--to FORMAT] [--label NAME] [--out-dir FOLDER]
+                    [--skip-unreadable] [--overwrite]
 ```
 
 - **What you get.** A standard data disc image (ISO 9660 with Joliet names) that Windows, macOS and
-  Linux open, and that you can mount, burn or convert to CSO or CHD like any other ISO. File names keep
-  their capitals, spaces and non-English letters. Dates and the hidden attribute are kept.
-- **The disc's name** is the folder's name, or what you give with `--label`. Windows shows the first 16
-  characters.
+  Linux open, and that you can mount, burn or convert like any other ISO. File names keep their
+  capitals, spaces and non-English letters. Dates and the hidden attribute are kept.
+- **Packed formats.** `--to cso`, `zso`, `chd` or `chd-zstd` (or an output name ending in `.cso`,
+  `.zso` or `.chd`) makes the ISO and packs it in one go. The ISO is written to a temporary file beside
+  the result first, so this needs room for both until it finishes.
+- **A whole drive.** Drives have the same two entries under "Show more options", and `rustimgmount
+  create D:\` works too. The image holds the drive's files (not a sector-by-sector copy), is named after
+  the drive and goes on your desktop unless you say where. Windows' own `System Volume Information` and
+  `$RECYCLE.BIN` folders are left out.
+- **The disc's name** is the folder's name, or what you give. Windows shows the first 16 characters.
 - **Big files are fine.** A file of 4 GiB or more is recorded in several pieces, which Windows (Vista
   and later), macOS and Linux read as one file.
-- **Limits of the format.** A name can be at most 103 characters; with a longer one, nothing is written
-  and the names are listed so you can shorten them. A `;` in a name is written as `_`, and it says so.
-  Folders that are links to other folders (junctions and symbolic links) are left out, because they can
-  lead back into themselves.
+- **Long names.** Joliet holds names of up to 103 characters. When a name is longer, the image also
+  gets the UDF file system that DVDs use, which holds the whole name (up to 254 characters, or 127 when
+  it has letters outside Western European alphabets). Windows, macOS and Linux read UDF first, so they
+  show the full names; the Joliet tree carries a shortened name for older software. `--udf` adds UDF to
+  any image. Names beyond UDF's limit stop it before anything is written, and are listed.
+- **Files that can't be read** (open in another program, or no permission) are found before anything
+  is written. Normally that stops it and names them. With `--skip-unreadable`, or the tick box in the
+  dialog, they are left out and listed at the end.
+- **Other limits.** In an image without UDF, a `;` in a name is written as `_`, and it says so. Folders
+  that are links to other folders (junctions and symbolic links) are left out, because they can lead
+  back into themselves.
 - **Several folders at once** are done one after another in one progress window, in the same queue as
   conversions. A notification says when a long one, or a batch, has finished.
 - Free space is checked before anything is written, and nothing half-written is left behind.
@@ -407,13 +432,16 @@ the same way the right-click menu does.
   **Mount** or **Unmount** (whichever applies to the image), **Convert to ...** for the formats that suit
   the image, and **More formats and options...** for the Convert dialog. It looks inside the file to
   decide, so a `.img` that is a disc is offered disc formats and one that is a disk gets disk formats.
-  Folders get their own entry, **Create ISO image**. Windows only lists commands
+  Folders get a **rustimgmount** entry of their own, holding **Create ISO image** and **Create disc image:
+  more options...**. Drives have those two under "Show more options", because Windows does not accept
+  drives in this kind of menu. Windows only lists commands
   from packaged apps in that menu, so setup registers a small package that points at
   `rustimgmount_shell.dll` in the install folder. The package is unsigned, which is why Developer Mode is
   needed.
 - **Otherwise** (Windows 10, Developer Mode off, or the DLL not built): the classic entries under "Show
   more options": **Mount with rustimgmount**, **Unmount (rustimgmount)** and **Convert to** with its list
-  of formats, plus **Create ISO image** on folders. `rustimgmount install` adds these on their own.
+  of formats, plus **Create ISO image** and **Create disc image: more options...** on folders and
+  drives. `rustimgmount install` adds these on their own.
 
 Double-click associations add a bold **Mount** at the top of the menu as well; that is Windows showing
 the file type's default action. `setup --remove` takes all of it away.
@@ -484,8 +512,9 @@ Fixtures that need a real third-party writer are made by Rust examples:
 `convert.py` takes the images the other suites made, converts them between formats and back, and compares
 the result with the original byte for byte.
 
-`mkiso.py` makes ISO images from a folder with `rustimgmount create` and reads them back with its own
-small ISO 9660 and Joliet reader, comparing every file with the original.
+`mkiso.py` makes disc images from a folder with `rustimgmount create` and reads them back with its own
+small ISO 9660, Joliet and UDF readers, comparing every file with the original. It covers long names,
+files in several extents, files that can't be read, and the packed formats.
 
 The MDX fixture's encryption is produced by an independent pure-Python AES, checked against the FIPS-197 test vector.
 
@@ -502,7 +531,7 @@ python tests/fixtures/emu.py target/release/rustimgmount.exe target/release/exam
 - `src/main.rs`: CLI, the mount and unmount flow, the cache
 - `src/vdisk.rs`: VirtDisk API wrapper, drive-letter discovery, device-path dismount
 - `src/convert.rs`: ISO, dynamic VHD and VHDX writers, free-space checks
-- `src/mkiso.rs`: `create`: the ISO 9660 and Joliet writer that makes an image from a folder
+- `src/mkiso.rs`: `create`: the ISO 9660, Joliet and UDF writer that makes an image from a folder
 - `src/export.rs`: `convert --to`: CSO/ZSO, CHD, BIN/CUE, CCD, GDI, raw, VMDK, VDI and QCOW2 writers, verification
 - `src/formats/`: format detection and readers
   - `cd.rs`: disc assembly, plus ISO/BIN/CUE/GDI/NRG/MDS/CCD/CDI
