@@ -200,7 +200,8 @@ fn run_job(q: &Queue, job: &Job, cli: &Path) -> Option<String> {
             cmd.args(["--to", &job.to]);
         }
         if let Some(l) = &job.label {
-            cmd.args(["--label", l]);
+            // As one argument: a name that starts with "-" must not be read as an option.
+            cmd.arg(format!("--label={l}"));
         }
         if job.skip {
             cmd.arg("--skip-unreadable");
@@ -1004,5 +1005,10 @@ pub fn pick_create(folders: &[String]) -> i32 {
 /// A folder as Explorer passes it. A drive arrives as `D:\"`: the backslash of "D:\"
 /// swallows the closing quote.
 pub fn folder_arg(arg: &str) -> String {
-    arg.trim().trim_end_matches('"').to_string()
+    let mut folder = arg.trim().trim_end_matches('"').to_string();
+    // "D:" alone would mean the current folder on D:, not the drive.
+    if folder.len() == 2 && folder.ends_with(':') {
+        folder.push('\\');
+    }
+    folder
 }

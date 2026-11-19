@@ -3,6 +3,26 @@
 What changed in each release of rustimgmount. The newest is first. Each section here
 becomes that version's release notes on GitHub.
 
+## 0.1.9
+
+Fixes from a review of the code added in 0.1.6 to 0.1.8.
+
+- Cancelling while a folder was being made into a CSO or CHD could leave the temporary ISO behind, as
+  big as the whole folder. It is now removed like other half-written files.
+- "Create ISO image" on a drive could make an image of whichever folder was current on that drive
+  when run from a terminal, not of the drive.
+- A file that was being written to, or that has more than one name (a hard link), could be recorded
+  with an out-of-date size: cut short, or refused with "changed while it was being read".
+- Folders that OneDrive and similar programs mark specially were left out as if they were links. Only
+  real links (junctions and symbolic links) are left out now.
+- Two runs writing the same file at once no longer write into each other's work: the second is
+  refused. A file that appears under the result's name while it is being made is not replaced.
+- A drive's image is saved to your real Desktop when OneDrive has moved it, and its name no longer
+  breaks when the drive's name has characters a file name can't.
+- Imaging a whole system drive skips Windows' page file and hibernation file.
+- A disc name starting with `-` typed in the Create dialog no longer fails.
+- `setup --no-menu` also removes a right-click menu left by an earlier setup.
+
 ## 0.1.8
 
 - **A dialog for making disc images.** "Create disc image: more options..." on folders, and "Create ISO

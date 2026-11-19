@@ -23,7 +23,6 @@ const SECTOR: usize = 2048;
 /// The longest name Joliet readers accept, in UTF-16 units.
 const MAX_NAME: usize = 103;
 const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
-const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 
 /// The most one extent of a file can hold: the largest whole number of sectors that
 /// fits a 32-bit length. (RUSTIMGMOUNT_TEST_EXTENT, in sectors, shrinks it for the tests.)
@@ -248,19 +247,24 @@ fn walk(folder: &Path, skip: &[PathBuf], skip_unreadable: bool, notes: &mut Vec<
                 continue;
             }
             let real = e.file_name().to_string_lossy().into_owned();
-            if drive && d == 0 && (real.eq_ignore_ascii_case("System Volume Information") || real.eq_ignore_ascii_case("$RECYCLE.BIN")) {
+            const WINDOWS_OWN: [&str; 6] = ["System Volume Information", "$RECYCLE.BIN", "pagefile.sys", "hiberfil.sys", "swapfile.sys", "DumpStack.log.tmp"];
+            if drive && d == 0 && WINDOWS_OWN.iter().any(|w| real.eq_ignore_ascii_case(w)) {
                 continue;
             }
             // What can't be read is found now, before anything is written.
             let read = e.metadata().and_then(|own| {
-                let link = own.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+                // Symbolic links and junctions. (Other "reparse points", such as OneDrive's
+                // placeholders for files kept online, are ordinary files and folders to us.)
+                let link = e.file_type()?.is_symlink();
                 // A link is followed to the file it points to.
-                let meta = if link { std::fs::metadata(&path)? } else { own.clone() };
+                let mut meta = if link { std::fs::metadata(&path)? } else { own.clone() };
                 if !(link && meta.is_dir()) {
                     if meta.is_dir() {
                         std::fs::read_dir(&path)?;
                     } else {
-                        File::open(&path)?;
+                        // The size and date are asked of the file itself: a folder's listing
+                        // can be out of date for a file that is being written, or has other names.
+                        meta = File::open(&path)?.metadata()?;
                     }
                 }
                 Ok((own, meta, link))

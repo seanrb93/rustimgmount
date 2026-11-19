@@ -251,7 +251,11 @@ fn marker_dir() -> PathBuf {
 
 impl Job {
     pub fn new(overwrite: bool, protected: Vec<PathBuf>) -> Job {
-        Job { files: Vec::new(), marker: marker_dir().join(format!("{}.txt", std::process::id())), done: false, overwrite, protected }
+        // A marker of its own for each job: a process can have two going at once (a folder
+        // made into a CHD has the temporary ISO and the CHD), and neither may forget the other's files.
+        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Job { files: Vec::new(), marker: marker_dir().join(format!("{}-{n}.txt", std::process::id())), done: false, overwrite, protected }
     }
 
     /// Reserve an output file; returns the temporary path to write to.
@@ -267,6 +271,9 @@ impl Job {
         let mut name = target.file_name().unwrap_or_default().to_os_string();
         name.push(".partial");
         let tmp = target.with_file_name(name);
+        if tmp.exists() && being_written(&tmp) {
+            bail!("{} is already being written by another rustimgmount; wait for it to finish", target.display());
+        }
         self.files.push((tmp.clone(), target.to_owned()));
         // Recorded so that, if this process is killed (Cancel in the progress dialog), the
         // next rustimgmount command can delete the half-written files.
@@ -278,6 +285,13 @@ impl Job {
 
     /// Everything was written: give the files their real names.
     pub fn commit(mut self) -> Result<Vec<PathBuf>> {
+        // A file that turned up under the same name while this was being written is not
+        // replaced unless that was asked for.
+        if !self.overwrite {
+            if let Some((_, target)) = self.files.iter().find(|(_, t)| t.exists()) {
+                bail!("{} was created by something else in the meantime; nothing was replaced", target.display());
+            }
+        }
         for (tmp, target) in &self.files {
             std::fs::rename(tmp, target).with_context(|| format!("creating {}", target.display()))?;
         }
@@ -298,12 +312,27 @@ impl Drop for Job {
     }
 }
 
+/// The process a marker file belongs to: "<pid>-<n>.txt" (or "<pid>.txt" from older versions).
+fn marker_pid(path: &Path) -> Option<u32> {
+    path.file_stem()?.to_str()?.split('-').next()?.parse().ok()
+}
+
+/// Is `tmp` listed by a job of a process that is still running?
+fn being_written(tmp: &Path) -> bool {
+    let Ok(dir) = std::fs::read_dir(marker_dir()) else { return false };
+    dir.flatten().any(|e| {
+        let path = e.path();
+        marker_pid(&path).is_some_and(|pid| pid != std::process::id() && crate::winutil::process_alive(pid))
+            && std::fs::read_to_string(&path).unwrap_or_default().lines().any(|l| crate::state::same_path(Path::new(l), tmp))
+    })
+}
+
 /// Delete the half-written files of conversions whose process is gone.
 pub fn sweep() {
     let Ok(dir) = std::fs::read_dir(marker_dir()) else { return };
     for e in dir.flatten() {
         let path = e.path();
-        let pid = path.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse::<u32>().ok());
+        let pid = marker_pid(&path);
         if pid.is_some_and(crate::winutil::process_alive) {
             continue;
         }

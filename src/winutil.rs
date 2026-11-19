@@ -261,6 +261,24 @@ pub fn tray_running() -> bool {
     true
 }
 
+/// The user's Desktop folder, wherever it is (OneDrive's backup moves it out of the profile).
+pub fn desktop_dir() -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::UI::Shell::{FOLDERID_Desktop, SHGetKnownFolderPath};
+    let mut path: *mut u16 = null_mut();
+    let hr = unsafe { SHGetKnownFolderPath(&FOLDERID_Desktop, 0, null_mut(), &mut path) };
+    if hr != 0 || path.is_null() {
+        return None;
+    }
+    let dir = unsafe {
+        let len = (0..).take_while(|&i| *path.add(i) != 0).count();
+        let dir = std::ffi::OsString::from_wide(std::slice::from_raw_parts(path, len));
+        windows_sys::Win32::System::Com::CoTaskMemFree(path as _);
+        dir
+    };
+    Some(std::path::PathBuf::from(dir)).filter(|d| d.is_dir())
+}
+
 /// Ask the running tray app to close, and wait a moment for it to do so.
 pub fn stop_tray() {
     use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowExW, FindWindowW, PostMessageW, HWND_MESSAGE, WM_CLOSE};

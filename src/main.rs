@@ -1089,7 +1089,9 @@ fn setup(no_menu: bool, no_associate: bool, plain_icons: bool) -> Result<i32> {
             run_installed(&exe, &["install"])?;
         }
     } else {
+        // Without the menu: take away one left by an earlier setup, whichever kind it was.
         winutil::unregister_modern_menu();
+        winutil::uninstall_shell()?;
     }
     let w = dest.join("rustimgmountw.exe");
     if w.exists() {
@@ -1356,8 +1358,12 @@ fn convert_detected(
 fn create_cmd(folder: &Path, output: Option<PathBuf>, c: CreateOpts) -> Result<i32> {
     use export::{Format, Target};
     // Explorer passes a drive as "D:\", and the backslash swallows the closing quote.
-    let folder = PathBuf::from(folder.to_string_lossy().trim_end_matches('"'));
-    let folder = std::path::absolute(&folder)?;
+    let mut text = folder.to_string_lossy().trim_end_matches('"').to_string();
+    // ...which leaves "D:", and that means "the current folder on D:", not the drive.
+    if text.len() == 2 && text.ends_with(':') {
+        text.push('\\');
+    }
+    let folder = std::path::absolute(PathBuf::from(text))?;
     if !folder.is_dir() {
         bail!("{} is not a folder", folder.display());
     }
@@ -1378,11 +1384,21 @@ fn create_cmd(folder: &Path, output: Option<PathBuf>, c: CreateOpts) -> Result<i
             let (dir, name) = match (folder.parent(), folder.file_name()) {
                 (Some(parent), Some(name)) => (parent.to_owned(), name.to_string_lossy().into_owned()),
                 _ => {
-                    let home = PathBuf::from(std::env::var_os("USERPROFILE").ok_or_else(|| anyhow!("give the name of the file to write"))?);
-                    let desktop = home.join("Desktop");
-                    let letter: String = folder.to_string_lossy().chars().take(1).collect();
-                    let label = vdisk::volume_label(&folder).filter(|l| !l.is_empty()).unwrap_or_else(|| format!("Drive {letter}"));
-                    (if desktop.is_dir() { desktop } else { home }, label)
+                    let desktop = match winutil::desktop_dir() {
+                        Some(d) => d,
+                        None => PathBuf::from(std::env::var_os("USERPROFILE").ok_or_else(|| anyhow!("give the name of the file to write"))?),
+                    };
+                    // "Drive D" for a drive without a name; a network share has no letter.
+                    let letter = folder.to_string_lossy().chars().next().filter(char::is_ascii_alphabetic);
+                    let unnamed = letter.map(|l| format!("Drive {}", l.to_ascii_uppercase())).unwrap_or_else(|| "Disc".into());
+                    // A disc's name can hold characters a file name can't.
+                    let label: String = vdisk::volume_label(&folder)
+                        .unwrap_or_default()
+                        .chars()
+                        .map(|c| if c.is_control() || "\\/:*?\"<>|".contains(c) { '_' } else { c })
+                        .collect();
+                    let label = label.trim().trim_end_matches('.').to_string();
+                    (desktop, if label.is_empty() { unnamed } else { label })
                 }
             };
             let dir = match &c.out_dir {

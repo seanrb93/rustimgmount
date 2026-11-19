@@ -440,6 +440,32 @@ report("--out-dir", None if code == 0 and os.path.exists(os.path.join(elsewhere,
 code, lines = create(src + '"', os.path.join(D, "quote.iso"))
 report("stray quote from Explorer", None if code == 0 else "exit %d: %s" % (code, lines))
 
+# ---- a packed image cancelled half-way, and two runs after the same file
+
+import time
+slow = os.path.join(D, "slow")
+os.makedirs(slow)
+for i in range(4):
+    with open(os.path.join(slow, "noise %d.bin" % i), "wb") as f: f.write(os.urandom(48 << 20))
+slow_out = os.path.join(D, "slow.chd")
+temp_iso = slow_out + ".rustimgmount-temp.iso.partial"
+first = subprocess.Popen([EXE, "create", slow, slow_out], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+deadline = time.time() + 60
+while not os.path.exists(slow_out + ".partial") and first.poll() is None and time.time() < deadline: time.sleep(0.005)
+if first.poll() is not None or not os.path.exists(slow_out + ".partial"):
+    report("cancel while packing", "the first run ended before it could be cancelled")
+else:
+    # A second run for the same file must not write into the first one's files.
+    code, lines = create(slow, slow_out)
+    report("second run for the same file", None if code != 0 and any("already being written" in l for l in lines) else "exit %d: %s" % (code, lines[-2:]), "refused")
+    still = os.path.exists(temp_iso) and first.poll() is None
+    first.kill(); first.wait()
+    subprocess.run([EXE, "list"], capture_output=True)      # any command tidies up
+    left = [f for f in os.listdir(D) if f.startswith("slow.")]
+    err = "the first run's files were gone before it was cancelled" if not still else ("left behind: %s" % left if left else None)
+    report("cancel while packing", err, "the temporary ISO and the half-made CHD are both removed")
+shutil.rmtree(slow)
+
 empty = os.path.join(D, "nothing here")
 os.makedirs(empty)
 code, lines = create(empty)
