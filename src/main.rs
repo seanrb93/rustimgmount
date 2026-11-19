@@ -1301,6 +1301,8 @@ fn convert_detected(
 fn formats_cmd(images: &[PathBuf]) -> Result<i32> {
     let mut common: Option<Vec<&'static export::Format>> = None;
     let mut errors = Vec::new();
+    // False when a file wasn't looked into (an archive), so the list is "everything".
+    let mut inspected = true;
     for image in images {
         let kind = absolute(image).and_then(|p| export::kind_of(&p).map(|k| (p, k)));
         for d in formats::expand::take_created() {
@@ -1308,6 +1310,7 @@ fn formats_cmd(images: &[PathBuf]) -> Result<i32> {
         }
         match kind {
             Ok((p, kind)) => {
+                inspected &= kind != export::Kind::Unknown;
                 let mine = export::choices(kind, &formats::ext(&formats::split_disc(&p).0));
                 common = Some(match common {
                     None => mine,
@@ -1318,7 +1321,7 @@ fn formats_cmd(images: &[PathBuf]) -> Result<i32> {
         }
     }
     let formats: Vec<_> = common.unwrap_or_default().iter().map(|f| serde_json::json!({ "id": f.id, "label": f.label })).collect();
-    println!("{}", serde_json::json!({ "formats": formats, "errors": errors }));
+    println!("{}", serde_json::json!({ "formats": formats, "errors": errors, "inspected": inspected }));
     Ok(0)
 }
 

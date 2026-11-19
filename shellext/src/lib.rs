@@ -65,9 +65,57 @@ const SUBCOMMANDS: [Verb; 15] = [
     Verb::More,
 ];
 
-/// The formats offered directly for a file extension (the same lists as the classic
-/// menu's "Convert to"). Extensions used for both discs and disks get none: for those the
-/// Convert dialog looks inside the file first.
+/// The formats this selection can really be converted to, found by having rustimgmount
+/// look inside the files (the same question the Convert dialog asks). `None` when that
+/// can't be had quickly: a big selection, a slow answer, or files it didn't look into.
+/// The answer is kept for a few seconds, because Explorer asks once per menu entry.
+fn suitable(files: &[String]) -> Option<Vec<String>> {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static LAST: Mutex<Option<(Vec<String>, Instant, Option<Vec<String>>)>> = Mutex::new(None);
+    if files.is_empty() || files.len() > 12 {
+        return None;
+    }
+    let mut last = LAST.lock().ok()?;
+    if let Some((f, at, answer)) = last.as_ref() {
+        if f == files && at.elapsed() < Duration::from_secs(5) {
+            return answer.clone();
+        }
+    }
+    let answer = (|| {
+        let mut child = std::process::Command::new(folder().join("rustimgmount.exe"))
+            .arg("formats")
+            .args(files)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .ok()?;
+        // A menu must not hang on a slow or odd file: give it a moment, then go by extension.
+        let start = Instant::now();
+        while child.try_wait().ok()?.is_none() {
+            if start.elapsed() > Duration::from_millis(1500) {
+                let _ = child.kill();
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut child.stdout.take()?, &mut text).ok()?;
+        if !text.contains("\"inspected\":true") {
+            return None;
+        }
+        // {"errors":[...],"formats":[{"id":"cso","label":"..."},...],"inspected":true}
+        Some(text.split("\"id\":\"").skip(1).filter_map(|s| s.split('"').next()).map(str::to_string).collect())
+    })();
+    *last = Some((files.to_vec(), Instant::now(), answer.clone()));
+    answer
+}
+
+/// The formats offered for a file extension when the files themselves can't be asked
+/// (the same lists as the classic menu's "Convert to"). Extensions used for both discs
+/// and disks get none: for those the Convert dialog looks inside the file first.
 fn quick_formats(ext: &str) -> &'static [&'static str] {
     match ext {
         "img" | "raw" | "001" | "e01" | "ex01" | "m3u" => &[],
@@ -214,7 +262,13 @@ impl IExplorerCommand_Impl for Command_Impl {
                     files.is_empty() || mounted.iter().any(|m| *m != Some(false))
                 }
             }
-            Verb::To(id) => !files.is_empty() && files.iter().all(|f| quick_formats(&extension(f)).contains(&id)),
+            // (Converting to the format a file is already in, to change its flavour, is
+            // left to the Convert dialog: "Convert to CHD" on a CHD would only puzzle.)
+            Verb::To(id) if files.iter().any(|f| extension(f) == id) => false,
+            Verb::To(id) => match suitable(&files) {
+                Some(ids) => ids.iter().any(|i| i == id),
+                None => !files.is_empty() && files.iter().all(|f| quick_formats(&extension(f)).contains(&id)),
+            },
         };
         Ok(if show { ECS_ENABLED.0 } else { ECS_HIDDEN.0 } as u32)
     }

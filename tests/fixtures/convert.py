@@ -187,10 +187,15 @@ checks = [
     (("basic/disk.img",), ["vhd", "vhd-fixed", "vhdx", "vmdk", "vdi", "qcow2", "qcow2-compressed"]),
     (("emu/disc.gdi",), ["iso", "cso", "zso", "chd", "chd-zstd"]),
     (("emu/gdrom.chd",), ["iso", "cso", "zso", "chd", "chd-zstd", "gdi"]),
+    (("emu/hdd.chd",), ["chd", "chd-zstd", "vhd", "vhd-fixed", "vhdx", "img", "vmdk", "vdi", "qcow2", "qcow2-compressed"]),
+    (("basic/test.iso",), ["cso", "zso", "chd", "chd-zstd", "cue"]),
+    (("basic/mode1.cue",), ["iso", "cso", "zso", "chd", "chd-zstd", "ccd"]),
+    (("more/set.m3u",), None),
     (("basic/test.iso", "basic/disk.img"), []),
-    (("basic/test.iso", "more/audio/game.cue"), ["cso", "zso", "chd", "chd-zstd", "ccd"]),
+    (("basic/test.iso", "more/audio/game.cue"), ["cso", "zso", "chd", "chd-zstd"]),
 ]
-bad_lists = ["%s -> %s" % (n, formats(*n)) for n, want in checks if formats(*n) != want]
+bad_lists = ["%s -> %s" % (n, formats(*n)) for n, want in checks if want is not None and formats(*n) != want]
+bad_lists += ["%s -> nothing offered" % (n,) for n, want in checks if want is None and not formats(*n)]
 report("formats offered", "; ".join(bad_lists) or None, "discs, disks, GD-ROMs and mixed selections")
 
 # ---------------------------------------------------------------- refusals and clean-up

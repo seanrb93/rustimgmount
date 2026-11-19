@@ -125,7 +125,10 @@ const DISK_TARGETS: &str = "vhd, vhdx, img, vmdk, vdi, qcow2 or chd";
 /// What an image holds, as far as choosing an output format goes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
+    /// A disc with raw 2352-byte sectors throughout (what CloneCD images need).
     Disc,
+    /// A disc that has 2048-byte sectors somewhere: everything but CloneCD.
+    PlainDisc,
     GdRom,
     Disk,
     /// Not looked into (archives would have to be unpacked first).
@@ -134,25 +137,35 @@ pub enum Kind {
 
 pub fn kind_of(image: &Path) -> Result<Kind> {
     let (base, _) = formats::split_disc(image);
-    if formats::multi(image)?.is_some() {
-        return Ok(Kind::Disc);
+    if let Some(discs) = formats::multi(image)? {
+        // A playlist or multi-disc file: its discs are alike, so the first one tells.
+        return match discs.first() {
+            Some(first) if first != image => kind_of(first),
+            _ => Ok(Kind::PlainDisc),
+        };
     }
     if formats::expand::kind(&base)?.is_some() {
         return Ok(Kind::Unknown);
     }
     let det = formats::detect(image);
     let path = det.as_ref().map(|d| d.data_path.clone()).unwrap_or_else(|_| image.to_owned());
-    Ok(match det.map(|d| d.plan) {
-        Ok(Plan::Disk(_) | Plan::Native(NativeKind::Vhd | NativeKind::Vhdx)) => Kind::Disk,
-        Ok(_) => match layout::parse(&path) {
-            Ok(Some(l)) if l.gd => Kind::GdRom,
-            _ => Kind::Disc,
-        },
-        Err(e) => match layout::parse(&path) {
-            Ok(Some(l)) if l.gd => Kind::GdRom,
-            Ok(Some(_)) => Kind::Disc, // e.g. an audio CD: nothing to mount, but it has tracks
-            _ => return Err(e),
-        },
+    let of_layout = |l: &Layout| {
+        if l.gd {
+            Kind::GdRom
+        } else if l.tracks.iter().all(|t| t.size == 2352) {
+            Kind::Disc
+        } else {
+            Kind::PlainDisc
+        }
+    };
+    let listed = layout::parse(&path).ok().flatten();
+    Ok(match (det, listed) {
+        (Ok(Detected { plan: Plan::Disk(_) | Plan::Native(NativeKind::Vhd | NativeKind::Vhdx), .. }), _) => Kind::Disk,
+        // (Also an audio CD: nothing to mount, but it has tracks.)
+        (_, Some(l)) => of_layout(&l),
+        (Ok(Detected { plan: Plan::Cd(d), .. }), None) => of_layout(&layout::single(d)),
+        (Ok(_), None) => Kind::PlainDisc, // a plain .iso
+        (Err(e), None) => return Err(e),
     })
 }
 
@@ -165,8 +178,10 @@ pub fn choices(kind: Kind, ext: &str) -> Vec<&'static Format> {
         .filter(|f| f.target.ext() != ext || f.variant != Variant::Plain || matches!(f.target, Chd | Vhd | Qcow2))
         .filter(|f| match kind {
             Kind::Disc => matches!(f.target, Iso | Cso | Zso | Chd | Cue | Ccd),
+            Kind::PlainDisc => matches!(f.target, Iso | Cso | Zso | Chd | Cue),
             Kind::GdRom => matches!(f.target, Iso | Cso | Zso | Chd | Gdi),
-            Kind::Disk => matches!(f.target, Vhd | Vhdx | Img | Vmdk | Vdi | Qcow2),
+            // (A hard disk CHD can be recompressed; other disks aren't offered CHD, which only MAME uses for disks.)
+            Kind::Disk => matches!(f.target, Vhd | Vhdx | Img | Vmdk | Vdi | Qcow2) || (f.target == Chd && ext == "chd"),
             Kind::Unknown => true,
         })
         .collect()

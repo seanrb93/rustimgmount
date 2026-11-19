@@ -240,9 +240,14 @@ it takes more than about 1.5 seconds (converting a big image), a small progress 
 
 Right-click an image, open **rustimgmount** and pick **Convert to ...** with the format. The new file
 appears next to the original, with the same name. **More formats and options...** opens the Convert
-dialog; files whose extension is used for both discs and disks (`.img`, `.raw`, `.001`, `.e01`) only get
-that entry, because the dialog looks inside the file first. (With the classic menu, the same choices are
-under **Convert to**.)
+dialog, which also has the less common formats and the options.
+
+**Only formats that fit are offered.** Both the menu and the dialog look inside the image first: a disc
+is offered disc formats, a disk gets disk formats, a Dreamcast GD-ROM gets GDI where another disc gets
+BIN/CUE, and CloneCD is only offered for images with raw sectors. For several images at once, it's the
+formats they all share. Archives aren't unpacked just to build the menu, so for those the dialog lists
+everything and an unsuitable choice is refused with a message saying what would work. The classic menu
+on Windows 10 goes by file extension, so there the dialog is the one that knows.
 
 **The Convert dialog** looks inside the image first and lists only the formats that fit it. It opens on
 the format and options you used last time (except moving originals to the Recycle Bin, which is asked for
@@ -372,7 +377,8 @@ the same way the right-click menu does.
 - **Windows 11, with Developer Mode on** (Settings > System > For developers): a single **rustimgmount**
   entry in the menu you get straight away (it also shows under "Show more options"). Its flyout holds
   **Mount** or **Unmount** (whichever applies to the image), **Convert to ...** for the formats that suit
-  the file type, and **More formats and options...** for the Convert dialog. Windows only lists commands
+  the image, and **More formats and options...** for the Convert dialog. It looks inside the file to
+  decide, so a `.img` that is a disc is offered disc formats and one that is a disk gets disk formats. Windows only lists commands
   from packaged apps in that menu, so setup registers a small package that points at
   `rustimgmount_shell.dll` in the install folder. The package is unsigned, which is why Developer Mode is
   needed.
