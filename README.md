@@ -408,9 +408,13 @@ cargo build --release --manifest-path shellext/Cargo.toml --target-dir target/sh
 copy target\shellext\release\rustimgmount_shell.dll target\release\
 ```
 
-Every push is built and tested on GitHub (`.github/workflows/ci.yml`). Pushing a tag such as `v0.1.0`
-that matches the version in `Cargo.toml` publishes a release with the installer and the zip
-(`.github/workflows/release.yml`).
+Every push is built and tested on GitHub (`.github/workflows/ci.yml`), installer included.
+
+To release a version: set it in `Cargo.toml`, add a `## <version>` section to
+[CHANGELOG.md](CHANGELOG.md) saying what changed, and push a tag such as `v0.1.6`. GitHub then builds
+it and publishes a release with the installer and the zip, using that section as the release notes
+(`.github/workflows/release.yml`). Editing `CHANGELOG.md` later updates the notes of the releases
+already published.
 
 The programs in `target\release` belong together:
 - `rustimgmount.exe` is the command-line tool.
