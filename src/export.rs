@@ -278,8 +278,11 @@ impl Job {
         // Recorded so that, if this process is killed (Cancel in the progress dialog), the
         // next rustimgmount command can delete the half-written files.
         let _ = std::fs::create_dir_all(marker_dir());
+        // The first line says when this process started: a process number alone is not
+        // enough, because Windows hands the numbers of finished processes out again.
+        let started = crate::winutil::process_started(std::process::id()).unwrap_or(0);
         let list: String = self.files.iter().map(|(t, _)| format!("{}\n", t.display())).collect();
-        let _ = std::fs::write(&self.marker, list);
+        let _ = std::fs::write(&self.marker, format!("#started {started}\n{list}"));
         Ok(tmp)
     }
 
@@ -317,13 +320,26 @@ fn marker_pid(path: &Path) -> Option<u32> {
     path.file_stem()?.to_str()?.split('-').next()?.parse().ok()
 }
 
+/// Is the process that wrote this marker still running? (The same process: one that
+/// started when the marker says, not a later one that was given the same number.)
+fn marker_live(path: &Path) -> bool {
+    let Some(pid) = marker_pid(path) else { return false };
+    if !crate::winutil::process_alive(pid) {
+        return false;
+    }
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    match text.lines().next().and_then(|l| l.strip_prefix("#started ")).and_then(|t| t.parse::<u64>().ok()) {
+        Some(started) if started != 0 => crate::winutil::process_started(pid) == Some(started),
+        _ => true, // a marker from an older version: go by the number
+    }
+}
+
 /// Is `tmp` listed by a job of a process that is still running?
 fn being_written(tmp: &Path) -> bool {
     let Ok(dir) = std::fs::read_dir(marker_dir()) else { return false };
     dir.flatten().any(|e| {
         let path = e.path();
-        marker_pid(&path).is_some_and(|pid| pid != std::process::id() && crate::winutil::process_alive(pid))
-            && std::fs::read_to_string(&path).unwrap_or_default().lines().any(|l| crate::state::same_path(Path::new(l), tmp))
+        marker_pid(&path).is_some_and(|pid| pid != std::process::id()) && marker_live(&path) && std::fs::read_to_string(&path).unwrap_or_default().lines().any(|l| crate::state::same_path(Path::new(l), tmp))
     })
 }
 
@@ -332,8 +348,7 @@ pub fn sweep() {
     let Ok(dir) = std::fs::read_dir(marker_dir()) else { return };
     for e in dir.flatten() {
         let path = e.path();
-        let pid = marker_pid(&path);
-        if pid.is_some_and(crate::winutil::process_alive) {
+        if marker_live(&path) {
             continue;
         }
         for line in std::fs::read_to_string(&path).unwrap_or_default().lines() {

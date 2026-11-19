@@ -350,6 +350,21 @@ pub fn process_alive(pid: u32) -> bool {
     ok != 0 && code == 259 // STILL_ACTIVE
 }
 
+/// When the process with this id started, as Windows counts time. `None` if it is gone.
+pub fn process_started(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if h.is_null() {
+        return None;
+    }
+    let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+    let ok = unsafe { GetProcessTimes(h, &mut created, &mut exited, &mut kernel, &mut user) };
+    unsafe { CloseHandle(h) };
+    (ok != 0).then(|| (created.dwHighDateTime as u64) << 32 | created.dwLowDateTime as u64)
+}
+
 /// Start this executable in the background with `args`: no window, no console, and no
 /// inherited handles (so it can't keep a caller's output pipe open after we exit).
 pub fn spawn_detached(args: &[String]) -> Result<()> {

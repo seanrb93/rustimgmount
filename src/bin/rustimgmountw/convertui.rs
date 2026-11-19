@@ -206,6 +206,7 @@ fn run_job(q: &Queue, job: &Job, cli: &Path) -> Option<String> {
         if job.skip {
             cmd.arg("--skip-unreadable");
         }
+        // (--verify and --overwrite are added below, as for a conversion.)
     } else {
         cmd.args(["convert", &job.image, "--to", &job.to]);
     }
@@ -534,6 +535,8 @@ struct Prefs {
     create_format: Option<String>,
     #[serde(default)]
     create_skip: bool,
+    #[serde(default)]
+    create_verify: bool,
 }
 
 impl Prefs {
@@ -821,8 +824,8 @@ const CREATE_FORMATS: [(&str, &str); 4] = [
 
 struct CreateDialog {
     out_dir: Option<String>,
-    /// Set when "Create" is pressed: (format index, disc name, leave out unreadable files).
-    result: Option<(usize, String, bool)>,
+    /// Set when "Create" is pressed: (format index, disc name, leave out unreadable files, verify).
+    result: Option<(usize, String, bool, bool)>,
     closed: bool,
 }
 
@@ -853,7 +856,7 @@ unsafe extern "system" fn create_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
                     let sel = SendMessageW(GetDlgItem(hwnd, ID_FORMAT), CB_GETCURSEL, 0, 0).max(0) as usize;
                     let mut buf = [0u16; 64];
                     let n = GetWindowTextW(GetDlgItem(hwnd, ID_LABEL), buf.as_mut_ptr(), buf.len() as i32).max(0) as usize;
-                    CREATE.result = Some((sel, String::from_utf16_lossy(&buf[..n]).trim().to_string(), checked(hwnd, ID_SKIP)));
+                    CREATE.result = Some((sel, String::from_utf16_lossy(&buf[..n]).trim().to_string(), checked(hwnd, ID_SKIP), checked(hwnd, ID_VERIFY)));
                     DestroyWindow(hwnd);
                 }
                 2 => {
@@ -896,7 +899,7 @@ fn create_dialog(folders: &[String]) -> Vec<Job> {
 
         let dpi = windows_sys::Win32::UI::HiDpi::GetDpiForSystem().max(96) as i32;
         let s = |v: i32| v * dpi / 96;
-        let (cw, ch) = (s(460), s(248));
+        let (cw, ch) = (s(460), s(272));
         let style = WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_MINIMIZEBOX;
         let mut rc = RECT { left: 0, top: 0, right: cw, bottom: ch };
         AdjustWindowRectEx(&mut rc, style, 0, WS_EX_DLGMODALFRAME);
@@ -947,9 +950,11 @@ fn create_dialog(folders: &[String]) -> Vec<Job> {
         let same = add("BUTTON", "Use the usual place", WS_TABSTOP, 238, 148, 140, 26, ID_SAME);
         EnableWindow(same, 0);
         add("BUTTON", "Leave out files that can't be read, and say which", (BS_AUTOCHECKBOX as u32) | WS_TABSTOP, 16, 186, 428, 20, ID_SKIP);
-        add("BUTTON", "Create", (BS_DEFPUSHBUTTON as u32) | WS_TABSTOP, 258, 212, 90, 26, 1);
-        add("BUTTON", "Cancel", WS_TABSTOP, 354, 212, 90, 26, 2);
+        add("BUTTON", "Check the image against the folder when it's done", (BS_AUTOCHECKBOX as u32) | WS_TABSTOP, 16, 210, 428, 20, ID_VERIFY);
+        add("BUTTON", "Create", (BS_DEFPUSHBUTTON as u32) | WS_TABSTOP, 258, 236, 90, 26, 1);
+        add("BUTTON", "Cancel", WS_TABSTOP, 354, 236, 90, 26, 2);
         SendMessageW(GetDlgItem(hwnd, ID_SKIP), BM_SETCHECK, prefs.create_skip as usize, 0);
+        SendMessageW(GetDlgItem(hwnd, ID_VERIFY), BM_SETCHECK, prefs.create_verify as usize, 0);
         ShowWindow(hwnd, SW_SHOW);
         SetForegroundWindow(hwnd);
         SetFocus(combo);
@@ -962,11 +967,12 @@ fn create_dialog(folders: &[String]) -> Vec<Job> {
             }
         }
         DeleteObject(font);
-        let Some((sel, label, skip)) = CREATE.result.clone() else { return Vec::new() };
+        let Some((sel, label, skip, verify)) = CREATE.result.clone() else { return Vec::new() };
         let format = CREATE_FORMATS.get(sel).map(|f| f.0).unwrap_or("iso");
         // (The folder is not remembered: the usual place is next to each folder.)
         prefs.create_format = Some(format.to_string());
         prefs.create_skip = skip;
+        prefs.create_verify = verify;
         prefs.save();
         folders
             .iter()
@@ -977,6 +983,7 @@ fn create_dialog(folders: &[String]) -> Vec<Job> {
                 create: true,
                 label: Some(label.clone()).filter(|l| !l.is_empty() && folders.len() == 1),
                 skip,
+                verify,
                 ..Default::default()
             })
             .collect()

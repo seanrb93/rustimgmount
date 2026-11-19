@@ -1,4 +1,4 @@
-param([string]$Exe, [string[]]$Folders, [string]$Pick = "", [string]$Name = "", [switch]$Skip, [switch]$Cancel)
+param([string]$Exe, [string[]]$Folders, [string]$Pick = "", [string]$Name = "", [switch]$Skip, [switch]$Verify, [switch]$Cancel)
 # Starts the Create dialog for $Folders, lists its controls, optionally selects a format
 # (-Pick, part of its text), types a disc name (-Name) and ticks "leave out files that
 # can't be read" (-Skip), then presses Create (or Cancel).
@@ -46,6 +46,7 @@ for ($i = 0; $i -lt $n; $i++) {
 }
 if ($Name) { [CW]::SetWindowTextW($byId[110], $Name) | Out-Null }
 if ($Skip) { [CW]::SendMessageW($byId[111], 0x00F1, [IntPtr]1, [IntPtr]::Zero) | Out-Null }   # BM_SETCHECK
+if ($Verify) { [CW]::SendMessageW($byId[103], 0x00F1, [IntPtr]1, [IntPtr]::Zero) | Out-Null }
 [CW]::PostMessageW($h, 0x0111, [IntPtr]$(if ($Cancel) { 2 } else { 1 }), [IntPtr]::Zero) | Out-Null   # WM_COMMAND
 $p.WaitForExit(120000) | Out-Null
 "exit code: $($p.ExitCode)"

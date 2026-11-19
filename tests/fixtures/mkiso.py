@@ -2,7 +2,7 @@
 a small ISO 9660 / Joliet reader, checking that every file comes out as it went in.
 
 Usage: mkiso.py <rustimgmount.exe> <work dir>"""
-import ctypes, os, shutil, struct, subprocess, sys
+import ctypes, functools, os, shutil, struct, subprocess, sys
 
 EXE, D = sys.argv[1], sys.argv[2]
 shutil.rmtree(D, ignore_errors=True)
@@ -80,6 +80,20 @@ def tree(img, d, joliet):
     walk(both32(d, 158), both32(d, 166), "")
     return files, order
 
+def by_standard(a, b, joliet):
+    """ISO 9660's order: the name, then the extension, each as if padded with spaces."""
+    def parts(raw):
+        units = list(struct.unpack(">%dH" % (len(raw) // 2), raw)) if joliet else list(raw)
+        if units[-2:] != [0x3B, 0x31]: return units, []           # a folder: no version, no extension
+        units = units[:-2]
+        dot = units.index(0x2E) if 0x2E in units else len(units)
+        return units[:dot], units[dot + 1:]
+    for x, y in zip(parts(a), parts(b)):
+        n = max(len(x), len(y))
+        x, y = x + [0x20] * (n - len(x)), y + [0x20] * (n - len(y))
+        if x != y: return -1 if x < y else 1
+    return 0
+
 def path_table(img, d, joliet):
     """[(name, lba, parent number)] from both copies of a path table, which must agree."""
     size = both32(d, 132)
@@ -115,7 +129,7 @@ def check(iso, expect, hidden=()):
                 if not (0 < len(stem) <= 8 and len(ext) <= 3 and all(c.isupper() or c.isdigit() or c == "_" for c in stem + ext)):
                     return "not an 8.3 name: %s" % p
         for names in order + plain_order:
-            if names != sorted(names): return "a listing is not in order"
+            if names != sorted(names, key=functools.cmp_to_key(lambda a, b: by_standard(a, b, names is not None and names in order))): return "a listing is not in order"
         for key, joliet in (("plain", False), ("joliet", True)):
             rows = path_table(img, d[key], joliet)
             folders = 1 + sum(v is None for v in expect.values())
@@ -338,6 +352,44 @@ write(os.path.join(odd, "ok.txt"), b"fine")
 code, lines = create(odd)
 err = "failed: %s" % lines if code else check(os.path.join(D, "odd.iso"), {"a_b.txt": b"semicolon", "ok.txt": b"fine"})
 report("';' in a name", err or (None if any("';'" in l for l in lines) else "no note about the changed name"), "written as '_', with a note")
+
+# Names that only clash once they are changed or folded: both files are kept.
+clash = os.path.join(D, "clash")
+clash_expect = {"a;b.txt": b"semicolon", "a_b.txt": b"underscore", "k.txt": b"small k", "\u212a.txt": b"kelvin sign",
+                "a.txt": b"plain", "a-b.txt": b"dash", "a b.txt": b"space", "a!.txt": b"bang", "ab.txt": b"ab"}
+for name, data in clash_expect.items(): write(os.path.join(clash, name), data)
+code, lines = create(clash)
+if code: err = "failed: %s" % lines
+else:
+    with open(os.path.join(D, "clash.iso"), "rb") as f: img = f.read()
+    got, _ = tree(img, descriptors(img)["joliet"], True)
+    want = dict(clash_expect); want["a_b~1.txt"] = want.pop("a;b.txt")
+    err = None if got == want else "got %s" % sorted(got)
+    err = err or check(os.path.join(D, "clash.iso"), want)
+report("names that would clash", err, "both kept, in the standard's order")
+
+# ---- reading the image back
+
+checked = os.path.join(D, "checked.iso")
+code, lines = create(src, checked, "--verify")
+report("--verify", None if code == 0 and any("Verified" in l for l in lines) else "exit %d: %s" % (code, lines[-2:]))
+code, lines = create(src, checked, "--verify", "--overwrite", env=env)
+report("--verify, files in several extents", None if code == 0 else "exit %d: %s" % (code, lines[-2:]))
+code, lines = create(longs_early := os.path.join(D, "Holiday photos"), os.path.join(D, "checked udf.iso"), "--verify", "--udf")
+report("--verify with UDF", None if code == 0 else "exit %d: %s" % (code, lines[-2:]))
+damaged = os.path.join(D, "damaged.iso")
+code, lines = create(src, damaged, "--verify", env=dict(os.environ, RUSTIMGMOUNT_TEST_DAMAGE="1"))
+left = [f for f in os.listdir(D) if f.startswith("damaged")]
+report("--verify notices damage", None if code != 0 and any("big.bin differs" in l for l in lines) and not left else "exit %d, files %s: %s" % (code, left, lines[-2:]), "and the image is deleted")
+code, lines = create(src, os.path.join(D, "checked.chd"), "--verify")
+report("--verify on a packed image", None if code == 0 and any("Verified" in l for l in lines) else "exit %d: %s" % (code, lines[-2:]))
+
+# A folder made for the result inside the folder being imaged is not part of the image.
+inner = os.path.join(src, "made here", "deeper")
+code, lines = create(src, "--out-dir", inner)
+err = "failed: %s" % lines if code else check(os.path.join(inner, "Holiday photos.iso"), expect, hidden=["readme.txt"])
+report("--out-dir inside the folder", err, "left out of the image")
+shutil.rmtree(os.path.join(src, "made here"))
 # ---- names too long for Joliet: the image gets the UDF file system as well
 
 def long_path(*parts):

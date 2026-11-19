@@ -57,6 +57,15 @@ struct Node {
 }
 
 impl Node {
+    /// What the name is ordered by in tree `t`: its name and its extension, apart.
+    fn order_key(&self, t: usize) -> (Vec<u16>, Vec<u16>) {
+        let units: Vec<u16> = if t == 0 { self.short.trim_end_matches(";1").bytes().map(u16::from).collect() } else { self.name.encode_utf16().collect() };
+        match units.iter().position(|&u| u == 0x2E).filter(|_| !self.dir) {
+            Some(dot) => (units[..dot].to_vec(), units[dot + 1..].to_vec()),
+            None => (units, Vec::new()),
+        }
+    }
+
     /// The identifier recorded in tree `t`.
     fn id(&self, t: usize) -> Vec<u8> {
         if t == 0 {
@@ -150,6 +159,31 @@ fn short_name(name: &str, dir: bool, used: &mut HashSet<String>, next: &mut Hash
     }
 }
 
+/// Fold case the way Windows' file systems do: one letter to one capital. (Rust's own
+/// folding would call "K" the Kelvin sign and "k" the same name, which NTFS does not.)
+fn fold(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            let mut upper = c.to_uppercase();
+            match (upper.next(), upper.next()) {
+                (Some(u), None) => u,
+                _ => c,
+            }
+        })
+        .collect()
+}
+
+/// Compare two names as ISO 9660 orders them: as if the shorter were padded with spaces.
+fn padded_cmp(a: &[u16], b: &[u16]) -> std::cmp::Ordering {
+    for i in 0..a.len().max(b.len()) {
+        let (x, y) = (a.get(i).copied().unwrap_or(0x20), b.get(i).copied().unwrap_or(0x20));
+        if x != y {
+            return x.cmp(&y);
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
 /// The longest name UDF can record: 254 characters when all of them are Latin-1, else 127.
 fn udf_name_fits(name: &str) -> bool {
     if name.chars().all(|c| (c as u32) < 256) {
@@ -159,8 +193,9 @@ fn udf_name_fits(name: &str) -> bool {
     }
 }
 
-/// A Joliet name for a file whose real name is too long for Joliet: the start of the name,
-/// "~1" (or the first number that is free in its folder) and the extension.
+/// A Joliet name for a file whose own name can't be used: too long for Joliet, or the same
+/// as another's once ';' is written as '_'. It is the start of the name, "~1" (or the
+/// first number that is free in its folder) and the extension.
 fn shorten(name: &str, used: &HashSet<String>) -> String {
     let (stem, ext) = match name.rfind('.') {
         Some(i) if i > 0 && name[i..].encode_utf16().count() <= 20 => (&name[..i], &name[i..]),
@@ -178,7 +213,7 @@ fn shorten(name: &str, used: &HashSet<String>) -> String {
             cand.push(c);
         }
         cand.push_str(&tail);
-        if !used.contains(&cand.to_lowercase()) {
+        if !used.contains(&fold(&cand)) {
             return cand;
         }
         n += 1;
@@ -235,9 +270,9 @@ fn walk(folder: &Path, skip: &[PathBuf], skip_unreadable: bool, notes: &mut Vec<
         let (mut shorts, mut next, mut names, mut assigned) = (HashSet::new(), HashMap::new(), HashSet::new(), HashSet::new());
         // Names that fit as they are come first, so a shortened name never takes one of theirs.
         for e in &entries {
-            let name = e.file_name().to_string_lossy().replace(';', "_");
-            if name.encode_utf16().count() <= MAX_NAME {
-                names.insert(name.to_lowercase());
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.encode_utf16().count() <= MAX_NAME && !name.contains(';') {
+                names.insert(fold(&name));
             }
         }
         for e in entries {
@@ -290,12 +325,17 @@ fn walk(folder: &Path, skip: &[PathBuf], skip_unreadable: bool, notes: &mut Vec<
             if name.encode_utf16().count() > MAX_NAME {
                 // Too long for Joliet: the whole name goes in the UDF tree.
                 name = shorten(&name, &names);
-                names.insert(name.to_lowercase());
+                names.insert(fold(&name));
                 long_names = true;
             } else if name != real {
+                // "a;b" beside a real "a_b": the changed one gets a number.
+                if names.contains(&fold(&name)) {
+                    name = shorten(&name, &names);
+                }
+                names.insert(fold(&name));
                 renamed += 1;
             }
-            if !assigned.insert(name.to_lowercase()) {
+            if !assigned.insert(fold(&name)) {
                 bail!("{} holds two names that would be the same on the disc: {name}", dir_path.display());
             }
             let dir = meta.is_dir();
@@ -783,6 +823,11 @@ pub struct Options<'a> {
     pub skip_unreadable: bool,
     /// Write the UDF file system even when no name needs it.
     pub udf: bool,
+    /// Read the image back afterwards and compare every file with the one in the folder.
+    pub verify: bool,
+    /// The image is only a step towards a packed one (CSO, CHD) on the same drive, which
+    /// at worst is as big again: ask for room for both.
+    pub packed: bool,
 }
 
 /// Write an ISO image of `folder` to the file `out` (which is created or replaced).
@@ -803,11 +848,12 @@ pub fn write(folder: &Path, out: &Path, skip: &[PathBuf], opts: &Options) -> Res
     let mut order: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
     let mut number: [HashMap<usize, u16>; 2] = [HashMap::new(), HashMap::new()];
     for t in 0..2 {
+        let keys: Vec<(Vec<u16>, Vec<u16>)> = nodes.iter().map(|n| n.order_key(t)).collect();
         sorted[t] = nodes
             .iter()
             .map(|n| {
                 let mut c = n.children.clone();
-                c.sort_by_cached_key(|&i| nodes[i].id(t));
+                c.sort_by(|&i, &j| padded_cmp(&keys[i].0, &keys[j].0).then_with(|| padded_cmp(&keys[i].1, &keys[j].1)));
                 c
             })
             .collect();
@@ -874,7 +920,7 @@ pub fn write(folder: &Path, out: &Path, skip: &[PathBuf], opts: &Options) -> Res
     }
     let total = at * SECTOR as u64;
     // Find out now, not most of the way through, that the drive is too full.
-    crate::convert::check_free_space(out.parent().unwrap_or(Path::new(".")), total)?;
+    crate::convert::check_free_space(out.parent().unwrap_or(Path::new(".")), if opts.packed { total.saturating_mul(2) } else { total })?;
 
     let name = match folder.file_name() {
         Some(n) => n.to_string_lossy().into_owned(),
@@ -979,5 +1025,126 @@ pub fn write(folder: &Path, out: &Path, skip: &[PathBuf], opts: &Options) -> Res
     w.flush()?;
     drop(w);
     p.finish();
+    // Test hook: damage one file in the image, to prove that verification notices.
+    if std::env::var_os("RUSTIMGMOUNT_TEST_DAMAGE").is_some() {
+        if let Some(n) = nodes.iter().filter(|n| !n.dir).max_by_key(|n| n.size).filter(|n| n.size > 0) {
+            use std::os::windows::fs::FileExt;
+            let file = std::fs::OpenOptions::new().read(true).write(true).open(out)?;
+            let at = n.lba as u64 * SECTOR as u64 + n.size / 2;
+            let mut b = [0u8; 1];
+            file.seek_read(&mut b, at)?;
+            file.seek_write(&[b[0] ^ 0x5A], at)?;
+        }
+    }
+    if opts.verify {
+        verify(out, &nodes)?;
+    }
     Ok(Made { files, folders, bytes: total, notes })
+}
+
+// ---------------------------------------------------------------- reading it back
+
+/// Read the finished image back the way a disc reader does, by following its Joliet
+/// tree from the volume descriptor, and compare every file with the one in the folder.
+fn verify(image: &Path, nodes: &[Node]) -> Result<()> {
+    use std::io::{Seek, SeekFrom};
+    let wrong = |what: String| anyhow!("the image does not read back the same as the folder: {what}");
+    let mut img = File::open(image).with_context(|| format!("reading {}", image.display()))?;
+    let read = |img: &mut File, lba: u64, len: usize| -> Result<Vec<u8>> {
+        let mut buf = vec![0u8; len];
+        img.seek(SeekFrom::Start(lba * SECTOR as u64))?;
+        img.read_exact(&mut buf).map_err(|_| anyhow!("the image does not read back the same as the folder: it ends too early"))?;
+        Ok(buf)
+    };
+    let le = |b: &[u8], at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+    let mut root = None;
+    for s in 16..64u64 {
+        let d = read(&mut img, s, SECTOR)?;
+        if &d[1..6] != b"CD001" || d[0] == 255 {
+            break;
+        }
+        if d[0] == 2 && &d[88..91] == b"%/E" {
+            root = Some((le(&d, 158), le(&d, 166)));
+        }
+    }
+    let Some(root) = root else { return Err(wrong("it has no Joliet volume descriptor".into())) };
+
+    // Every folder and file the image lists: files as their pieces, (first sector, bytes).
+    let mut files: HashMap<String, Vec<(u32, u32)>> = HashMap::new();
+    let mut folders: HashSet<String> = HashSet::new();
+    let mut todo = vec![(String::new(), root.0, root.1)];
+    while let Some((prefix, lba, len)) = todo.pop() {
+        let data = read(&mut img, lba as u64, len as usize)?;
+        let (mut pos, mut seen) = (0usize, 0usize);
+        while pos < data.len() {
+            let l = data[pos] as usize;
+            if l == 0 {
+                pos = (pos / SECTOR + 1) * SECTOR; // the rest of this sector is padding
+                continue;
+            }
+            if l < 34 || pos + l > data.len() || 33 + data[pos + 32] as usize > l {
+                return Err(wrong(format!("the listing of \"{prefix}\" is damaged")));
+            }
+            seen += 1;
+            // (The first two records are the folder itself and its parent.)
+            if seen > 2 {
+                let id = &data[pos + 33..pos + 33 + data[pos + 32] as usize];
+                let units: Vec<u16> = id.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+                let name = String::from_utf16_lossy(&units);
+                let (at, size, flags) = (le(&data, pos + 2), le(&data, pos + 10), data[pos + 25]);
+                if flags & 2 != 0 {
+                    let path = format!("{prefix}{name}");
+                    todo.push((format!("{path}/"), at, size));
+                    folders.insert(path);
+                } else {
+                    files.entry(format!("{prefix}{}", name.strip_suffix(";1").unwrap_or(&name))).or_default().push((at, size));
+                }
+            }
+            pos += l;
+        }
+    }
+
+    // The same names, from the folder. (A folder comes before what is in it.)
+    let mut paths: Vec<String> = Vec::with_capacity(nodes.len());
+    paths.push(String::new());
+    for n in &nodes[1..] {
+        let parent = &paths[n.parent];
+        paths.push(if parent.is_empty() { n.name.clone() } else { format!("{parent}/{}", n.name) });
+    }
+    let (want_files, want_folders) = (nodes.iter().filter(|n| !n.dir).count(), nodes.iter().skip(1).filter(|n| n.dir).count());
+    if files.len() != want_files || folders.len() != want_folders {
+        return Err(wrong(format!("it lists {} file(s) and {} folder(s), the folder has {want_files} and {want_folders}", files.len(), folders.len())));
+    }
+    let mut p = Progress::new("Verifying", nodes.iter().map(|n| n.size).sum());
+    let (mut a, mut b) = (vec![0u8; 1 << 20], vec![0u8; 1 << 20]);
+    let mut done = 0u64;
+    for (n, path) in nodes.iter().zip(&paths).skip(1) {
+        if n.dir {
+            if !folders.contains(path) {
+                return Err(wrong(format!("the folder {path} is missing")));
+            }
+            continue;
+        }
+        let pieces = files.get(path).ok_or_else(|| wrong(format!("{path} is missing")))?;
+        if pieces.iter().map(|&(_, len)| len as u64).sum::<u64>() != n.size {
+            return Err(wrong(format!("{path} has a different size")));
+        }
+        let mut src = File::open(&n.path).with_context(|| format!("reading {}", n.path.display()))?;
+        for &(lba, len) in pieces {
+            img.seek(SeekFrom::Start(lba as u64 * SECTOR as u64))?;
+            let mut left = len as usize;
+            while left > 0 {
+                let want = left.min(a.len());
+                let same = img.read_exact(&mut a[..want]).is_ok() && src.read_exact(&mut b[..want]).is_ok() && a[..want] == b[..want];
+                if !same {
+                    return Err(wrong(format!("{path} differs (did it change while the image was being made?)")));
+                }
+                left -= want;
+                done += want as u64;
+                p.update(done);
+            }
+        }
+    }
+    p.finish();
+    Ok(())
 }

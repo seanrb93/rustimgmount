@@ -26,6 +26,13 @@ const ID_CONVERT: usize = 14;
 const ID_UNINSTALL: usize = 15;
 const ID_CREATE: usize = 16;
 const ID_UPDATE: usize = 17;
+const ID_AUTO_UPDATE: usize = 18;
+/// Posted to the tray window by the automatic check when it finds a newer version.
+const WM_UPDATE_FOUND: u32 = WM_APP + 2;
+/// Sent by Windows (in the tray message) when the notification is clicked.
+const NIN_BALLOONUSERCLICK: u32 = 0x0405;
+/// The newer version the automatic check found, if any.
+static UPDATE_FOUND: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 const RELEASES: &str = "https://github.com/seanrb93/rustimgmount/releases/latest";
 /// Recently mounted images: ID_RECENT_BASE + index
 const ID_RECENT_BASE: usize = 500;
@@ -164,7 +171,9 @@ unsafe fn show_menu(hwnd: HWND) {
     let auto = cli_output(&["autostart", "status"]).map(|s| s.trim() == "on").unwrap_or(false);
     append(menu, MF_STRING | if auto { MF_CHECKED } else { MF_UNCHECKED }, ID_AUTOSTART, "Start with Windows");
     append(menu, MF_SEPARATOR, 0, "");
-    append(menu, MF_STRING, ID_UPDATE, "Check for updates...");
+    let found = UPDATE_FOUND.lock().ok().and_then(|f| f.clone());
+    append(menu, MF_STRING, ID_UPDATE, &found.map(|v| format!("Version {v} is available...")).unwrap_or_else(|| "Check for updates...".into()));
+    append(menu, MF_STRING | if auto_update() { MF_CHECKED } else { MF_UNCHECKED }, ID_AUTO_UPDATE, "Check for updates when this starts");
     append(menu, MF_STRING, ID_UNINSTALL, "Uninstall rustimgmount...");
     append(menu, MF_STRING, ID_EXIT, "Exit");
     IMAGES = imgs;
@@ -176,9 +185,74 @@ unsafe fn show_menu(hwnd: HWND) {
     DestroyMenu(menu);
 }
 
+/// The tray app's own settings.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Settings {
+    /// Look for a newer version each time the tray app starts. Off unless the user turns it on.
+    #[serde(default)]
+    auto_update_check: bool,
+}
+
+fn settings_file() -> std::path::PathBuf {
+    crate::convertui::app_dir().join("tray.json")
+}
+
+fn auto_update() -> bool {
+    std::fs::read(settings_file()).ok().and_then(|b| serde_json::from_slice::<Settings>(&b).ok()).unwrap_or_default().auto_update_check
+}
+
+fn set_auto_update(on: bool) -> bool {
+    let _ = std::fs::create_dir_all(crate::convertui::app_dir());
+    serde_json::to_vec_pretty(&Settings { auto_update_check: on }).ok().is_some_and(|json| std::fs::write(settings_file(), json).is_ok())
+}
+
+/// The automatic check: quiet unless there is something newer, and then only a
+/// notification. `wait` gives Windows time to get online after signing in.
+fn auto_check(hwnd: isize, wait: std::time::Duration) {
+    std::thread::spawn(move || {
+        for attempt in 0..3 {
+            std::thread::sleep(if attempt == 0 { wait } else { std::time::Duration::from_secs(120) });
+            let Some(latest) = latest_version() else { continue };
+            if newer(&latest, env!("CARGO_PKG_VERSION")) {
+                if let Ok(mut found) = UPDATE_FOUND.lock() {
+                    *found = Some(latest);
+                }
+                unsafe { PostMessageW(hwnd as HWND, WM_UPDATE_FOUND, 0, 0) };
+            }
+            return;
+        }
+    });
+}
+
+/// Tell the user about the newer version with a notification from the tray icon.
+unsafe fn announce_update(hwnd: HWND) {
+    let Some(version) = UPDATE_FOUND.lock().ok().and_then(|f| f.clone()) else { return };
+    let mut nid = notify_data(hwnd);
+    nid.uFlags = NIF_INFO;
+    nid.dwInfoFlags = NIIF_INFO;
+    let put = |dst: &mut [u16], s: &str| {
+        for (i, c) in s.encode_utf16().take(dst.len() - 1).enumerate() {
+            dst[i] = c;
+        }
+    };
+    put(&mut nid.szInfoTitle, &format!("rustimgmount {version} is available"));
+    put(&mut nid.szInfo, &format!("You have {}. Click here, or use the tray menu, to open the download page.", env!("CARGO_PKG_VERSION")));
+    Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
+fn open_releases() {
+    let (verb, url) = (wide("open"), wide(RELEASES));
+    unsafe { ShellExecuteW(null_mut(), verb.as_ptr(), url.as_ptr(), null(), null(), SW_SHOWNORMAL) };
+}
+
 /// The version of the newest release, from where GitHub sends "releases/latest". Nothing
-/// about this PC is sent; it is one request, made only when the user asks.
+/// about this PC is sent: it is one request for a public page, made when the user asks or,
+/// if they turned that on, when the tray app starts.
 fn latest_version() -> Option<String> {
+    // (For the tests: pretend this is the newest release.)
+    if let Some(v) = std::env::var("RUSTIMGMOUNT_TEST_LATEST").ok().filter(|v| !v.is_empty()) {
+        return Some(v);
+    }
     let curl = std::path::PathBuf::from(std::env::var_os("SystemRoot")?).join("System32").join("curl.exe");
     let out = std::process::Command::new(curl)
         .args(["-s", "-o", "NUL", "-m", "15", "-w", "%{redirect_url}", RELEASES])
@@ -212,8 +286,7 @@ fn check_for_updates() {
         None => ask(&format!("Couldn't reach GitHub to check (you have version {mine}).\n\nOpen the releases page in your browser?")),
     };
     if open {
-        let (verb, url) = (wide("open"), wide(RELEASES));
-        unsafe { ShellExecuteW(null_mut(), verb.as_ptr(), url.as_ptr(), null(), null(), SW_SHOWNORMAL) };
+        open_releases();
     }
 }
 
@@ -287,7 +360,13 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let event = (lparam & 0xFFFF) as u32;
             if event == WM_LBUTTONUP || event == WM_RBUTTONUP || event == WM_CONTEXTMENU {
                 show_menu(hwnd);
+            } else if event == NIN_BALLOONUSERCLICK && UPDATE_FOUND.lock().is_ok_and(|f| f.is_some()) {
+                open_releases();
             }
+            0
+        }
+        WM_UPDATE_FOUND => {
+            announce_update(hwnd);
             0
         }
         WM_TIMER => {
@@ -322,6 +401,15 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 }
                 ID_UPDATE => {
                     std::thread::spawn(check_for_updates);
+                }
+                ID_AUTO_UPDATE => {
+                    let on = !auto_update();
+                    if !set_auto_update(on) {
+                        message_box("Could not save the setting.", true);
+                    } else if on {
+                        // Turned on: look now as well, quietly.
+                        auto_check(hwnd as isize, std::time::Duration::ZERO);
+                    }
                 }
                 id if (ID_RECENT_BASE..ID_RECENT_BASE + 20).contains(&id) => {
                     #[allow(static_mut_refs)]
@@ -400,6 +488,9 @@ pub fn run() {
         add_icon(hwnd);
         refresh_tooltip(hwnd);
         SetTimer(hwnd, TIMER_REFRESH, 10_000, None);
+        if auto_update() {
+            auto_check(hwnd as isize, std::time::Duration::from_secs(20));
+        }
         let mut msg: MSG = std::mem::zeroed();
         while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
             TranslateMessage(&msg);

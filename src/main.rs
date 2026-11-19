@@ -148,6 +148,9 @@ enum Cmd {
         /// Add the UDF file system even when no name is long enough to need it.
         #[arg(long)]
         udf: bool,
+        /// Read the image back and compare every file with the folder; delete it if it differs.
+        #[arg(long)]
+        verify: bool,
     },
     /// (internal) The formats these images can be converted to, as JSON.
     #[command(hide = true)]
@@ -302,8 +305,8 @@ fn run(cli: Cli) -> Result<i32> {
         Cmd::Convert { image, output, to, out_dir, overwrite, verify, delete_original } => {
             convert_cmd(&image, output, to, ConvertOpts { out_dir, overwrite, verify: verify || delete_original, delete_original })
         }
-        Cmd::Create { folder, output, label, overwrite, to, out_dir, skip_unreadable, udf } => {
-            create_cmd(&folder, output, CreateOpts { label, overwrite, to, out_dir, skip_unreadable, udf })
+        Cmd::Create { folder, output, label, overwrite, to, out_dir, skip_unreadable, udf, verify } => {
+            create_cmd(&folder, output, CreateOpts { label, overwrite, to, out_dir, skip_unreadable, udf, verify })
         }
         Cmd::Formats { images } => formats_cmd(&images),
         Cmd::Audio { image, output } => audio_cmd(&image, output),
@@ -1207,6 +1210,7 @@ struct CreateOpts {
     out_dir: Option<PathBuf>,
     skip_unreadable: bool,
     udf: bool,
+    verify: bool,
 }
 
 fn convert_cmd(image: &Path, output: Option<PathBuf>, to: Option<String>, opts: ConvertOpts) -> Result<i32> {
@@ -1376,6 +1380,8 @@ fn create_cmd(folder: &Path, output: Option<PathBuf>, c: CreateOpts) -> Result<i
     if !matches!(format.target, Target::Iso | Target::Cso | Target::Zso | Target::Chd) {
         bail!("a folder can be made into iso, cso, zso, chd or chd-zstd, not {}", format.id);
     }
+    // A folder made here for the result, inside the folder being imaged, is not part of it.
+    let mut made_dir = None;
     let out = match output {
         Some(o) => std::path::absolute(o)?,
         None => {
@@ -1403,8 +1409,11 @@ fn create_cmd(folder: &Path, output: Option<PathBuf>, c: CreateOpts) -> Result<i
             };
             let dir = match &c.out_dir {
                 Some(d) => {
-                    std::fs::create_dir_all(d).with_context(|| format!("creating {}", d.display()))?;
-                    std::path::absolute(d)?
+                    let d = std::path::absolute(d)?;
+                    // The outermost folder that doesn't exist yet is the one made here.
+                    made_dir = d.ancestors().take_while(|a| !a.exists()).last().map(|a| a.to_owned());
+                    std::fs::create_dir_all(&d).with_context(|| format!("creating {}", d.display()))?;
+                    d
                 }
                 None => dir,
             };
@@ -1422,11 +1431,13 @@ fn create_cmd(folder: &Path, output: Option<PathBuf>, c: CreateOpts) -> Result<i
     if out.is_dir() {
         bail!("{} is a folder; give the name of the file to write", out.display());
     }
-    let opts = mkiso::Options { label: c.label.as_deref(), skip_unreadable: c.skip_unreadable, udf: c.udf };
-    let made = if format.target == Target::Iso {
+    let packed = format.target != Target::Iso;
+    let opts = mkiso::Options { label: c.label.as_deref(), skip_unreadable: c.skip_unreadable, udf: c.udf, verify: c.verify, packed };
+    let leave_out = |tmp: &Path| -> Vec<PathBuf> { [out.clone(), tmp.to_owned()].into_iter().chain(made_dir.clone()).collect() };
+    let made = if !packed {
         let mut job = export::Job::new(c.overwrite, Vec::new());
         let tmp = job.add(&out)?;
-        let made = mkiso::write(&folder, &tmp, &[out.clone(), tmp.clone()], &opts)?;
+        let made = mkiso::write(&folder, &tmp, &leave_out(&tmp), &opts)?;
         job.commit()?;
         made
     } else {
@@ -1438,13 +1449,17 @@ fn create_cmd(folder: &Path, output: Option<PathBuf>, c: CreateOpts) -> Result<i
         let mut name = out.file_name().unwrap_or_default().to_os_string();
         name.push(".rustimgmount-temp.iso");
         let tmp = job.add(&out.with_file_name(name))?;
-        let made = mkiso::write(&folder, &tmp, &[out.clone(), tmp.clone()], &opts)?;
+        let made = mkiso::write(&folder, &tmp, &leave_out(&tmp), &opts)?;
         let det = formats::detect(&tmp);
-        export::run(&tmp, det, format, &out, export::Opts { overwrite: c.overwrite, verify: false })?;
+        // Checked in two steps: the ISO against the folder (above), the packed image against the ISO.
+        export::run(&tmp, det, format, &out, export::Opts { overwrite: c.overwrite, verify: c.verify })?;
         made // dropping `job` deletes the temporary ISO
     };
     let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(made.bytes);
     println!("Created {} ({} file(s), {} folder(s), {})", out.display(), made.files, made.folders, util::human(size));
+    if c.verify {
+        println!("Verified: every file reads back identical to the one in the folder.");
+    }
     for n in &made.notes {
         println!("note: {n}");
     }

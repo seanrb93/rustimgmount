@@ -235,9 +235,12 @@ Explorer caches icons, so new ones can take a sign-out to appear. The icons are 
 **Tray app.** The Start Menu entry (or `rustimgmountw --tray`) puts a disc icon in the notification area.
 Click it for a menu of what's mounted (open or unmount each image), **Mount image...**, **Mount recent**
 (the last ten images you mounted), **Convert image...** (opens the Convert dialog), **Create ISO from folder...** (opens the Create dialog), **Unmount all**,
-**Start with Windows**, **Check for updates...** and **Uninstall rustimgmount...**. Checking for
-updates asks GitHub which release is newest, only when you click it, and offers to open the download
-page; nothing is downloaded or installed by itself.
+**Start with Windows**, **Check for updates...**, **Check for updates when this starts** and
+**Uninstall rustimgmount...**. Checking for updates asks GitHub which release is newest and offers to
+open the download page; nothing is downloaded or installed by itself. It happens only when you click
+it, unless you tick **Check for updates when this starts**: then the tray app also looks once each time
+it starts, and shows a notification if there is a newer version. That is off until you turn it on. The
+request is for a public web page and says nothing about your PC or your files.
 
 **Progress.** Mounting from Explorer, the tray or the right-click menu shows no window when it's quick. If
 it takes more than about 1.5 seconds (converting a big image), a small progress dialog appears with a
@@ -349,7 +352,7 @@ The tray menu's **Create ISO from folder...** opens the same dialog. From a term
 
 ```
 rustimgmount create <folder or drive> [output] [--to FORMAT] [--label NAME] [--out-dir FOLDER]
-                    [--skip-unreadable] [--overwrite]
+                    [--verify] [--skip-unreadable] [--overwrite]
 ```
 
 - **What you get.** A standard data disc image (ISO 9660 with Joliet names) that Windows, macOS and
@@ -357,7 +360,7 @@ rustimgmount create <folder or drive> [output] [--to FORMAT] [--label NAME] [--o
   capitals, spaces and non-English letters. Dates and the hidden attribute are kept.
 - **Packed formats.** `--to cso`, `zso`, `chd` or `chd-zstd` (or an output name ending in `.cso`,
   `.zso` or `.chd`) makes the ISO and packs it in one go. The ISO is written to a temporary file beside
-  the result first, so this needs room for both until it finishes.
+  the result first, so this needs room for both until it finishes; that is checked before it starts.
 - **A whole drive.** Drives have the same two entries under "Show more options", and `rustimgmount
   create D:\` works too. The image holds the drive's files (not a sector-by-sector copy), is named after
   the drive and goes on your desktop unless you say where. Windows' own `System Volume Information` and
@@ -370,10 +373,16 @@ rustimgmount create <folder or drive> [output] [--to FORMAT] [--label NAME] [--o
   it has letters outside Western European alphabets). Windows, macOS and Linux read UDF first, so they
   show the full names; the Joliet tree carries a shortened name for older software. `--udf` adds UDF to
   any image. Names beyond UDF's limit stop it before anything is written, and are listed.
+- **Checking the result.** With `--verify`, or "Check the image against the folder when it's done" in
+  the dialog, the finished image is read back the way a disc reader reads it, from its list of folders
+  and files, and every file is compared with the one in the folder. An image that differs is deleted,
+  and it says which file. A packed image is checked in two steps: the ISO against the folder, then the
+  CSO or CHD against the ISO.
 - **Files that can't be read** (open in another program, or no permission) are found before anything
   is written. Normally that stops it and names them. With `--skip-unreadable`, or the tick box in the
   dialog, they are left out and listed at the end.
-- **Other limits.** In an image without UDF, a `;` in a name is written as `_`, and it says so. Folders
+- **Other limits.** In an image without UDF, a `;` in a name is written as `_`, and it says so; if
+  that makes it the same as another name, it gets a number as well (`a_b~1.txt`). Folders
   that are links to other folders (junctions and symbolic links) are left out, because they can lead
   back into themselves.
 - **Several folders at once** are done one after another in one progress window, in the same queue as

@@ -3,6 +3,23 @@
 What changed in each release of rustimgmount. The newest is first. Each section here
 becomes that version's release notes on GitHub.
 
+## 0.1.10
+
+- **Check a new image against its folder.** "Check the image against the folder when it's done" in the
+  Create dialog, or `rustimgmount create <folder> --verify`, reads the finished image back and compares
+  every file with the original. An image that differs is deleted.
+- **Check for updates when the tray app starts.** A new tick box in the tray menu, off unless you turn
+  it on. When a newer version exists you get one notification, and the menu says which version.
+- Making a CSO or CHD from a folder now checks there is room for the temporary ISO and the result.
+- A folder created for the result inside the folder being imaged (`--out-dir`) no longer appears in the
+  image as an empty folder.
+- Two names that are only the same once `;` is written as `_` no longer stop the image: the changed
+  one gets a number. Names that differ only by unusual letter variants, which Windows allows side by
+  side, are both kept.
+- Folder listings are ordered exactly as the ISO 9660 standard asks.
+- Cleaning up after a cancelled run can no longer be confused by another program that was given the
+  same process number.
+
 ## 0.1.9
 
 Fixes from a review of the code added in 0.1.6 to 0.1.8.
