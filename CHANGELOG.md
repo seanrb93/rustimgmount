@@ -3,6 +3,14 @@
 What changed in each release of rustimgmount. The newest is first. Each section here
 becomes that version's release notes on GitHub.
 
+## 0.1.11
+
+- **Fixed: "Create ISO image" was missing when right-clicking a folder** on PCs with the Windows 11
+  menu installed (Developer Mode on). Windows takes no notice of folder entries from rustimgmount's
+  menu package, so folders now have the same ordinary entries that drives already had: **Create ISO
+  image** and **Create disc image: more options...**. On Windows 11 they are under "Show more options".
+  Run the installer, or `rustimgmount setup`, again to get them.
+
 ## 0.1.10
 
 - **Check a new image against its folder.** "Check the image against the folder when it's done" in the

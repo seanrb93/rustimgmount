@@ -165,9 +165,9 @@ enum Cmd {
     Clean,
     /// Add "Mount with rustimgmount" / "Unmount" to the Explorer right-click menu (current user).
     Install {
-        /// Only the entries on drives, which the Windows 11 menu package can't provide.
-        #[arg(long, hide = true)]
-        drives_only: bool,
+        /// Only the entries on folders and drives, which the Windows 11 menu package can't provide.
+        #[arg(long, hide = true, alias = "drives-only")]
+        folders_only: bool,
     },
     /// Remove the Explorer right-click menu entries.
     Uninstall,
@@ -315,8 +315,8 @@ fn run(cli: Cli) -> Result<i32> {
             println!("Removed {n} cached file(s).");
             Ok(0)
         }
-        Cmd::Install { drives_only: true } => {
-            winutil::install_folder_menu(&["Drive"])?;
+        Cmd::Install { folders_only: true } => {
+            winutil::install_folder_menu(&["Directory", "Drive"])?;
             Ok(0)
         }
         Cmd::Install { .. } => {
@@ -1078,8 +1078,8 @@ fn setup(no_menu: bool, no_associate: bool, plain_icons: bool) -> Result<i32> {
                 Ok(()) => {
                     modern = true;
                     winutil::uninstall_shell()?;
-                    // The package can't put an entry on drives; those keep the classic one.
-                    run_installed(&exe, &["install", "--drives-only"])?;
+                    // The package can't put entries on folders or drives; those keep the classic ones.
+                    run_installed(&exe, &["install", "--folders-only"])?;
                     println!("Right-click menu: \"rustimgmount\" (Mount, Unmount, Convert) added to the Windows 11 menu.");
                 }
                 Err(e) => println!(

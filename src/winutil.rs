@@ -122,8 +122,6 @@ pub const SHELL_DLL: &str = "rustimgmount_shell.dll";
 const MENU_PACKAGE: &str = "rustimgmount.ShellMenu";
 /// Must match CLSID_MENU in shellext/src/lib.rs.
 const MENU_CLSID: &str = "7b3f5e2a-9c41-4d6b-a8e3-52c1d0f4b916";
-/// The entry on folders ("Create ISO image"). Must match CLSID_FOLDER in shellext/src/lib.rs.
-const FOLDER_CLSID: &str = "7b3f5e2a-9c41-4d6b-a8e3-52c1d0f4b917";
 
 fn powershell(script: &str) -> Result<()> {
     use std::os::windows::process::CommandExt;
@@ -151,13 +149,12 @@ pub fn register_modern_menu(dir: &std::path::Path) -> Result<()> {
     ] {
         std::fs::write(dir.join("assets").join(name), data)?;
     }
+    // Only the image file types. Windows takes no notice of "Directory" or "*" from this
+    // package (found by trying: the entries are accepted and then never offered), and
+    // rejects "Drive" outright, so folders and drives have ordinary registry entries.
     let types: String = SHELL_EXTS
         .iter()
         .map(|e| format!("            <desktop5:ItemType Type=\".{e}\"><desktop5:Verb Id=\"RustImgMount\" Clsid=\"{MENU_CLSID}\" /></desktop5:ItemType>\n"))
-        // (Windows rejects a manifest that names "Drive" here, so drives keep the classic entry.)
-        .chain([format!(
-            "            <desktop5:ItemType Type=\"Directory\"><desktop5:Verb Id=\"RustImgMountIso\" Clsid=\"{FOLDER_CLSID}\" /></desktop5:ItemType>\n"
-        )])
         .collect();
     let manifest = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
@@ -197,7 +194,6 @@ pub fn register_modern_menu(dir: &std::path::Path) -> Result<()> {
           <com:ComServer>
             <com:SurrogateServer DisplayName="rustimgmount menu">
               <com:Class Id="{MENU_CLSID}" Path="{SHELL_DLL}" ThreadingModel="STA" />
-              <com:Class Id="{FOLDER_CLSID}" Path="{SHELL_DLL}" ThreadingModel="STA" />
             </com:SurrogateServer>
           </com:ComServer>
         </com:Extension>

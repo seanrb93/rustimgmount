@@ -33,8 +33,15 @@ function MenuPresent {
     [bool](Get-AppxPackage -Name rustimgmount.ShellMenu) -or
         ((Test-Path "HKCU:\Software\Classes\SystemFileAssociations\.iso\shell\rustimgmount.mount") -and (Test-Path "HKCU:\Software\Classes\Directory\shell\rustimgmount.createiso"))
 }
-# Drives have the classic entries with either menu.
-function DriveMenuPresent { (Test-Path "HKCU:\Software\Classes\Drive\shell\rustimgmount.createiso") -and (Test-Path "HKCU:\Software\Classes\Drive\shell\rustimgmount.createmore") }
+# Folders and drives have the classic entries with either menu.
+function DriveMenuPresent {
+    foreach ($kind in "Directory", "Drive") {
+        foreach ($verb in "rustimgmount.createiso", "rustimgmount.createmore") {
+            if (-not (Test-Path "HKCU:\Software\Classes\$kind\shell\$verb")) { return $false }
+        }
+    }
+    $true
+}
 function MenuGone {
     -not (Get-AppxPackage -Name rustimgmount.ShellMenu) -and
         -not (Test-Path "HKCU:\Software\Classes\SystemFileAssociations\.iso\shell\rustimgmount.mount") -and
@@ -62,7 +69,7 @@ function CheckInstalled {
     Check "the install folder is on the user's PATH" (OnPath)
     Check "Start Menu shortcut" (Test-Path $shortcut)
     Check "right-click menu" (MenuPresent)
-    Check "right-click entries on drives" (DriveMenuPresent)
+    Check "right-click entries on folders and drives" (DriveMenuPresent)
     $apps = Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall" -ErrorAction SilentlyContinue |
         ForEach-Object { Get-ItemProperty $_.PSPath } | Where-Object { $_.DisplayName -like "rustimgmount*" }
     Check "one entry in Settings > Apps" (@($apps).Count -eq 1) "(found $(@($apps).Count))"

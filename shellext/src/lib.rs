@@ -24,8 +24,6 @@ use windows::Win32::UI::Shell::{
 
 /// Class ID of the menu entry; the package manifest written by `rustimgmount setup` names it.
 const CLSID_MENU: GUID = GUID::from_u128(0x7b3f5e2a_9c41_4d6b_a8e3_52c1d0f4b916);
-/// Class ID of the entry shown on folders, "Create ISO image".
-const CLSID_FOLDER: GUID = GUID::from_u128(0x7b3f5e2a_9c41_4d6b_a8e3_52c1d0f4b917);
 
 static MODULE: AtomicIsize = AtomicIsize::new(0);
 
@@ -47,16 +45,7 @@ enum Verb {
     To(&'static str),
     /// The Convert dialog.
     More,
-    /// The top-level entry on folders, which opens a flyout of its own.
-    FolderRoot,
-    /// On folders: make an ISO image of the folder straight away.
-    CreateIso,
-    /// On folders: the Create dialog (format, disc name, where to save).
-    CreateMore,
 }
-
-/// The flyout on folders.
-const FOLDER_SUBCOMMANDS: [Verb; 2] = [Verb::CreateIso, Verb::CreateMore];
 
 const SUBCOMMANDS: [Verb; 15] = [
     Verb::Mount,
@@ -196,6 +185,39 @@ fn records() -> Option<String> {
 #[implement(IExplorerCommand)]
 struct Command(Verb);
 
+impl Command {
+    fn name(&self) -> String {
+        match self.0 {
+            Verb::Root => "the image entry".into(),
+            Verb::Mount => "Mount".into(),
+            Verb::Unmount => "Unmount".into(),
+            Verb::Separator => "separator".into(),
+            Verb::To(id) => format!("Convert to {id}"),
+            Verb::More => "More formats".into(),
+        }
+    }
+}
+
+/// For finding out why an entry doesn't appear: when the file menu-debug.log exists in
+/// rustimgmount's data folder, what Explorer asks and what it is told is added to it.
+fn debug(line: &str) {
+    use std::io::Write;
+    let dir = match std::env::var_os("RUSTIMGMOUNT_DATA").filter(|v| !v.is_empty()) {
+        Some(d) => PathBuf::from(d),
+        None => match std::env::var_os("LOCALAPPDATA") {
+            Some(d) => PathBuf::from(d).join("rustimgmount"),
+            None => return,
+        },
+    };
+    let file = dir.join("menu-debug.log");
+    if !file.exists() {
+        return;
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(file) {
+        let _ = writeln!(f, "[pid {}] {line}", std::process::id());
+    }
+}
+
 /// File system paths of the selected items.
 fn paths(items: Ref<'_, IShellItemArray>) -> Vec<String> {
     let mut out = Vec::new();
@@ -222,7 +244,7 @@ fn launch(args: &[&str]) {
 impl IExplorerCommand_Impl for Command_Impl {
     fn GetTitle(&self, _items: Ref<'_, IShellItemArray>) -> Result<PWSTR> {
         let title = match self.0 {
-            Verb::Root | Verb::FolderRoot => "rustimgmount".to_string(),
+            Verb::Root => "rustimgmount".to_string(),
             Verb::Mount => "Mount".to_string(),
             Verb::Unmount => "Unmount".to_string(),
             Verb::Separator => String::new(),
@@ -234,14 +256,12 @@ impl IExplorerCommand_Impl for Command_Impl {
                 }
             ),
             Verb::More => "More formats and options...".to_string(),
-            Verb::CreateIso => "Create ISO image".to_string(),
-            Verb::CreateMore => "Create disc image: more options...".to_string(),
         };
         unsafe { SHStrDupW(&HSTRING::from(title)) }
     }
 
     fn GetIcon(&self, _items: Ref<'_, IShellItemArray>) -> Result<PWSTR> {
-        if !matches!(self.0, Verb::Root | Verb::FolderRoot) {
+        if self.0 != Verb::Root {
             return Err(E_NOTIMPL.into());
         }
         // The program's icon (resource 1 of rustimgmount.exe).
@@ -262,7 +282,6 @@ impl IExplorerCommand_Impl for Command_Impl {
         let files = paths(items);
         let show = match self.0 {
             Verb::Root | Verb::Separator | Verb::More => true,
-            Verb::FolderRoot | Verb::CreateIso | Verb::CreateMore => !files.is_empty() && files.iter().all(|f| Path::new(f).is_dir()),
             Verb::Mount | Verb::Unmount => {
                 let (records, attached) = (records(), attached());
                 let mounted: Vec<Option<bool>> = files
@@ -284,22 +303,16 @@ impl IExplorerCommand_Impl for Command_Impl {
                 None => !files.is_empty() && files.iter().all(|f| quick_formats(&extension(f)).contains(&id)),
             },
         };
+        debug(&format!("GetState {} for {} item(s): {}", self.name(), files.len(), if show { "shown" } else { "hidden" }));
         Ok(if show { ECS_ENABLED.0 } else { ECS_HIDDEN.0 } as u32)
     }
 
     fn Invoke(&self, items: Ref<'_, IShellItemArray>, _ctx: Ref<'_, IBindCtx>) -> Result<()> {
         let files = paths(items);
         match self.0 {
-            Verb::Root | Verb::FolderRoot | Verb::Separator => {}
+            Verb::Root | Verb::Separator => {}
             Verb::Mount => files.iter().for_each(|f| launch(&["mount", f, "--open"])),
             Verb::Unmount => files.iter().for_each(|f| launch(&["unmount", f])),
-            Verb::CreateIso => files.iter().for_each(|f| launch(&["create", f])),
-            // One dialog for all the folders selected.
-            Verb::CreateMore => {
-                let mut args: Vec<&str> = vec!["create-ui"];
-                args.extend(files.iter().map(String::as_str));
-                launch(&args);
-            }
             // Each goes into rustimgmountw's one queue, so they run one after another.
             Verb::To(id) => files.iter().for_each(|f| launch(&["convert", f, "--to", id])),
             // One dialog for the whole selection. Windows limits a command line to about
@@ -327,7 +340,7 @@ impl IExplorerCommand_Impl for Command_Impl {
 
     fn GetFlags(&self) -> Result<u32> {
         Ok(match self.0 {
-            Verb::Root | Verb::FolderRoot => ECF_HASSUBCOMMANDS.0,
+            Verb::Root => ECF_HASSUBCOMMANDS.0,
             Verb::Separator => ECF_ISSEPARATOR.0,
             _ => ECF_DEFAULT.0,
         } as u32)
@@ -336,7 +349,6 @@ impl IExplorerCommand_Impl for Command_Impl {
     fn EnumSubCommands(&self) -> Result<IEnumExplorerCommand> {
         match self.0 {
             Verb::Root => Ok(SubCommands(&SUBCOMMANDS, Cell::new(0)).into()),
-            Verb::FolderRoot => Ok(SubCommands(&FOLDER_SUBCOMMANDS, Cell::new(0)).into()),
             _ => Err(E_NOTIMPL.into()),
         }
     }
@@ -413,10 +425,9 @@ extern "system" fn DllGetClassObject(clsid: *const GUID, iid: *const GUID, objec
         return E_POINTER;
     }
     unsafe {
+        debug(&format!("Explorer asked for class {:?}", *clsid));
         let verb = if *clsid == CLSID_MENU {
             Verb::Root
-        } else if *clsid == CLSID_FOLDER {
-            Verb::FolderRoot
         } else {
             return CLASS_E_CLASSNOTAVAILABLE;
         };

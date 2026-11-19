@@ -15,7 +15,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\ui\<script>.ps1 <argum
 
 | Script | What it does |
 |---|---|
-| `explorer-menu.ps1 -Path <file>` | Prints the right-click menu Explorer builds for a file, submenus included. Nothing is clicked. Shows the rustimgmount flyout, and whether Mount or Unmount is offered. |
+| `explorer-menu.ps1 -Path <file>` | Prints the right-click menu Explorer builds for a file, submenus included. Nothing is clicked. Shows the rustimgmount flyout, and whether Mount or Unmount is offered. Works on folders and drives too. Run it twice: entries from packaged apps only show from the second time. |
+| `menu-handler.ps1 -Path <image>` | Asks the Windows 11 menu handler directly what it would show for an image, without Explorer in between. To tell "the handler hides the entry" from "Explorer never asks": create an empty `menu-debug.log` in `%LOCALAPPDATA%\rustimgmount` and the handler writes what Explorer asks it there. |
 | `create-dialog.ps1 -Exe <rustimgmountw.exe> -Folders <folder>... [-Pick "<format label>"] [-Name "<disc name>"] [-Skip] [-Verify] [-Cancel]` | Opens the Create dialog, prints its controls and formats, optionally picks a format, types a disc name and ticks "leave out files that can't be read" and "check the image against the folder", then presses Create (or Cancel). |
 | `convert-dialog.ps1 -Exe <rustimgmountw.exe> -Files <image>... [-Shot out.png] [-Pick "<format label>"] [-Check 103,105] [-Cancel]` | Opens the Convert dialog, prints its controls and the formats offered, optionally saves a picture, then presses Convert (or Cancel). Tick boxes: 103 verify, 104 recycle the original, 105 replace existing. |
 | `queue-progress.ps1 -Exe <rustimgmountw.exe> -Dir <scratch folder> -Iso <any small ISO> -Shot out.png` | Makes two large images, converts both through the queue, saves a picture of the progress window, presses Cancel and checks that no half-written file is left. |

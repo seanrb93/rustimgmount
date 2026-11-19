@@ -49,7 +49,7 @@ file of that type > Open with > Choose another app > rustimgmount > Always. You 
 | Mount an image | Double-click it, or right-click > **rustimgmount** > **Mount** |
 | Unmount it | Right-click the drive > **Eject**, or right-click the image > **rustimgmount** > **Unmount** |
 | Convert an image | Right-click > **rustimgmount** > **Convert to ...**, or **More formats and options...** |
-| Make an ISO from a folder | Right-click the folder > **rustimgmount** > **Create ISO image**, or **more options...** for CSO or CHD |
+| Make an ISO from a folder | Right-click the folder > **Create ISO image**, or **Create disc image: more options...** for CSO or CHD (on Windows 11, under "Show more options") |
 | Check for a newer version | Tray icon > **Check for updates...** |
 | See what's mounted | Click the rustimgmount icon in the notification area (start it from the Start Menu) |
 
@@ -339,7 +339,7 @@ converted.
 
 ### Making a disc image from a folder
 
-Right-click a folder and open **rustimgmount**:
+Right-click a folder (on Windows 11, then **Show more options**):
 
 - **Create ISO image** makes the image straight away. It appears next to the folder, named after it:
   `Photos` becomes `Photos.iso`. If that name is taken, the new image is called `Photos (2).iso`, so
@@ -361,8 +361,7 @@ rustimgmount create <folder or drive> [output] [--to FORMAT] [--label NAME] [--o
 - **Packed formats.** `--to cso`, `zso`, `chd` or `chd-zstd` (or an output name ending in `.cso`,
   `.zso` or `.chd`) makes the ISO and packs it in one go. The ISO is written to a temporary file beside
   the result first, so this needs room for both until it finishes; that is checked before it starts.
-- **A whole drive.** Drives have the same two entries under "Show more options", and `rustimgmount
-  create D:\` works too. The image holds the drive's files (not a sector-by-sector copy), is named after
+- **A whole drive.** Drives have the same two entries, and `rustimgmount create D:\` works too. The image holds the drive's files (not a sector-by-sector copy), is named after
   the drive and goes on your desktop unless you say where. Windows' own `System Volume Information` and
   `$RECYCLE.BIN` folders are left out.
 - **The disc's name** is the folder's name, or what you give. Windows shows the first 16 characters.
@@ -441,9 +440,9 @@ the same way the right-click menu does.
   **Mount** or **Unmount** (whichever applies to the image), **Convert to ...** for the formats that suit
   the image, and **More formats and options...** for the Convert dialog. It looks inside the file to
   decide, so a `.img` that is a disc is offered disc formats and one that is a disk gets disk formats.
-  Folders get a **rustimgmount** entry of their own, holding **Create ISO image** and **Create disc image:
-  more options...**. Drives have those two under "Show more options", because Windows does not accept
-  drives in this kind of menu. Windows only lists commands
+  Folders and drives have **Create ISO image** and **Create disc image: more options...** under "Show
+  more options": Windows does not offer entries for folders or drives from this kind of package (it
+  ignores the first and rejects the second), so those two are ordinary menu entries. Windows only lists commands
   from packaged apps in that menu, so setup registers a small package that points at
   `rustimgmount_shell.dll` in the install folder. The package is unsigned, which is why Developer Mode is
   needed.
