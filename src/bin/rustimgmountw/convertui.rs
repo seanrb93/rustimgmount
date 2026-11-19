@@ -158,6 +158,9 @@ pub struct Job {
     pub delete: bool,
     #[serde(default)]
     pub overwrite: bool,
+    /// Not a conversion: `image` is a folder to make an ISO image of.
+    #[serde(default)]
+    pub create: bool,
 }
 
 struct Queue {
@@ -171,6 +174,8 @@ struct Queue {
     /// (image name, error) of the conversions that failed.
     failures: Mutex<Vec<(String, String)>>,
     finished: Mutex<usize>,
+    /// How many of the finished jobs made an ISO image from a folder.
+    created: Mutex<usize>,
 }
 
 fn file_name(path: &str) -> String {
@@ -180,7 +185,11 @@ fn file_name(path: &str) -> String {
 /// Run one conversion hidden, feeding its progress to the dialog. Returns its error, if any.
 fn run_job(q: &Queue, job: &Job, cli: &Path) -> Option<String> {
     let mut cmd = Command::new(cli);
-    cmd.args(["convert", &job.image, "--to", &job.to]);
+    if job.create {
+        cmd.args(["create", &job.image]);
+    } else {
+        cmd.args(["convert", &job.image, "--to", &job.to]);
+    }
     if let Some(d) = &job.out_dir {
         cmd.args(["--out-dir", d]);
     }
@@ -315,6 +324,7 @@ pub fn enqueue(jobs: &[Job]) -> i32 {
         closing: AtomicBool::new(false),
         failures: Mutex::new(Vec::new()),
         finished: Mutex::new(0),
+        created: Mutex::new(0),
     });
     let start = Instant::now();
     let worker = {
@@ -333,7 +343,8 @@ pub fn enqueue(jobs: &[Job]) -> i32 {
                     }
                     let n = *q.finished.lock().unwrap() + 1;
                     let name = file_name(&job.image);
-                    *q.title.lock().unwrap() = if seen > 1 { format!("Converting {name} ({n} of {seen})") } else { format!("Converting {name}") };
+                    let doing = if job.create { "Making an ISO image of" } else { "Converting" };
+                    *q.title.lock().unwrap() = if seen > 1 { format!("{doing} {name} ({n} of {seen})") } else { format!("{doing} {name}") };
                     *q.percent.lock().unwrap() = None;
                     *q.line.lock().unwrap() = "Preparing...".into();
                     if let Some(err) = run_job(&q, job, &cli) {
@@ -342,6 +353,7 @@ pub fn enqueue(jobs: &[Job]) -> i32 {
                         }
                     }
                     *q.finished.lock().unwrap() += 1;
+                    *q.created.lock().unwrap() += job.create as usize;
                 }
             }
             q.done.store(true, Ordering::SeqCst);
@@ -376,14 +388,24 @@ pub fn enqueue(jobs: &[Job]) -> i32 {
     }
     drop(owner);
     let (done, failures) = (*q.finished.lock().unwrap(), q.failures.lock().unwrap().clone());
+    // Wording: all ISO images made from folders, all conversions, or some of each.
+    let created = *q.created.lock().unwrap();
+    let (all_created, mixed) = (created == done, created > 0 && created < done);
     if cancelled {
         return super::ERROR_SHOWN;
     }
     if !failures.is_empty() {
         let mut text = if done == 1 {
-            format!("{} could not be converted.\n\n{}", failures[0].0, failures[0].1)
+            let what = if all_created { "An ISO image could not be made of" } else { "Could not convert" };
+            format!("{what} {}.\n\n{}", failures[0].0, failures[0].1)
         } else {
-            let mut t = format!("{} of {done} images could not be converted:\n", failures.len());
+            let mut t = if all_created {
+                format!("{} of {done} ISO images could not be made:\n", failures.len())
+            } else if mixed {
+                format!("{} of {done} jobs failed:\n", failures.len())
+            } else {
+                format!("{} of {done} images could not be converted:\n", failures.len())
+            };
             for (name, err) in failures.iter().take(8) {
                 t.push_str(&format!("\n{name}\n    {err}\n"));
             }
@@ -397,7 +419,13 @@ pub fn enqueue(jobs: &[Job]) -> i32 {
     }
     // Something long finished while the user was probably doing something else: say so.
     if start.elapsed() > Duration::from_secs(10) || done > 1 {
-        notify(&if done == 1 { "The image has been converted.".to_string() } else { format!("{done} images have been converted.") });
+        notify(&match (done, all_created, mixed) {
+            (1, true, _) => "The ISO image has been made.".to_string(),
+            (1, ..) => "The image has been converted.".to_string(),
+            (_, true, _) => format!("{done} ISO images have been made."),
+            (_, _, true) => format!("{done} images have been converted or made."),
+            _ => format!("{done} images have been converted."),
+        });
     }
     0
 }
@@ -709,7 +737,7 @@ fn dialog(files: &[String]) -> Vec<Job> {
         prefs.save();
         files
             .iter()
-            .map(|f| Job { image: f.clone(), to: choice.id.clone(), out_dir: DIALOG.out_dir.clone(), verify: verify || delete, delete, overwrite })
+            .map(|f| Job { image: f.clone(), to: choice.id.clone(), out_dir: DIALOG.out_dir.clone(), verify: verify || delete, delete, create: false, overwrite })
             .collect()
     }
 }

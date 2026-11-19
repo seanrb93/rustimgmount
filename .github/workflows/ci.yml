@@ -27,6 +27,10 @@ jobs:
       # that made it, not when a release is tagged.
       - name: Build, test and package
         run: ./build.ps1 -Test -Package -Installer
+      # Installs with each combination of the installer's tick boxes, checks the result
+      # and uninstalls again.
+      - name: Test the installer
+        run: ./tools/test-installer.ps1 -Installer (Get-ChildItem dist\*-setup.exe).FullName
       - uses: actions/upload-artifact@v4
         with:
           name: rustimgmount-windows-x64

@@ -3,6 +3,14 @@
 What changed in each release of rustimgmount. The newest is first. Each section here
 becomes that version's release notes on GitHub.
 
+## 0.1.7
+
+- **"Create ISO image" behaves like converting.** Several folders are done one after another in one
+  progress window, and a notification says when a long one, or a batch, has finished.
+- Making an ISO checks first that the drive has room for it.
+- Every build now installs and uninstalls itself with each combination of the installer's options, and
+  checks what that leaves behind.
+
 ## 0.1.6
 
 - **Make an ISO from a folder.** Right-click a folder and choose "Create ISO image", use "Create ISO

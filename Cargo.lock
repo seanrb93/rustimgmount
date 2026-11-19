@@ -1037,7 +1037,7 @@ dependencies = [
 
 [[package]]
 name = "rustimgmount"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aes 0.8.4",
  "anyhow",

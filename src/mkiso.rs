@@ -458,6 +458,8 @@ pub fn create(folder: &Path, out: &Path, label: Option<&str>, overwrite: bool) -
         bail!("the folder is too big for an ISO image (the limit is about 8 TiB)");
     }
     let total = at * SECTOR as u64;
+    // Find out now, not most of the way through, that the drive is too full.
+    crate::convert::check_free_space(out.parent().unwrap_or(Path::new(".")), total)?;
 
     let name = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "DISC".into());
     let label = label.unwrap_or(&name);

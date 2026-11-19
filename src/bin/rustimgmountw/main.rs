@@ -286,10 +286,16 @@ fn main() {
                     verify: has("--verify"),
                     delete: has("--delete-original"),
                     overwrite: has("--overwrite"),
+                    create: false,
                 }]),
                 None => convertui::pick(&args[1..2]),
             };
             std::process::exit(code);
+        }
+        // "Create ISO image" on a folder joins the same queue, so several folders are
+        // done one after another. (With an output name or options it runs on its own.)
+        Some("create") if args.len() == 2 => {
+            std::process::exit(convertui::enqueue(&[convertui::Job { image: args[1].clone(), create: true, ..Default::default() }]));
         }
         _ => {}
     }

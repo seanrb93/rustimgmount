@@ -351,7 +351,9 @@ rustimgmount create <folder> [output.iso] [--label NAME] [--overwrite]
   and the names are listed so you can shorten them. A `;` in a name is written as `_`, and it says so.
   Folders that are links to other folders (junctions and symbolic links) are left out, because they can
   lead back into themselves.
-- Nothing half-written is left behind, as with converting.
+- **Several folders at once** are done one after another in one progress window, in the same queue as
+  conversions. A notification says when a long one, or a batch, has finished.
+- Free space is checked before anything is written, and nothing half-written is left behind.
 
 ### CD audio
 
@@ -435,7 +437,9 @@ cargo build --release --manifest-path shellext/Cargo.toml --target-dir target/sh
 copy target\shellext\release\rustimgmount_shell.dll target\release\
 ```
 
-Every push is built and tested on GitHub (`.github/workflows/ci.yml`), installer included.
+Every push is built and tested on GitHub (`.github/workflows/ci.yml`), installer included:
+`tools/test-installer.ps1` installs it silently with each combination of the installer's options, checks
+what that leaves on the machine, and uninstalls it again.
 
 To release a version: set it in `Cargo.toml`, add a `## <version>` section to
 [CHANGELOG.md](CHANGELOG.md) saying what changed, and push a tag such as `v0.1.6`. GitHub then builds
