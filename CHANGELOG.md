@@ -17,6 +17,13 @@ becomes that version's release notes on GitHub.
 
 ## 0.1.11
 
+> **⚠ Antivirus warning:** Microsoft Defender may flag this version as `Trojan:Win32/Bearfoos.A!ml`.
+> This is a false positive. The `!ml` means the alert comes from Defender's machine-learning check,
+> not from a known threat. Version 0.1.11 doesn't do anything harmful, but a few things it did when
+> uninstalling and checking for updates look like what malware does. Version 0.1.12 does those
+> things differently. Please install 0.1.12 or later instead. You can check that any download is the
+> official one with its `-sha256.txt` file.
+
 - **Fixed: "Create ISO image" was missing when right-clicking a folder** on PCs with the Windows 11
   menu installed (Developer Mode on). Windows takes no notice of folder entries from rustimgmount's
   menu package, so folders now have the same ordinary entries that drives already had: **Create ISO
