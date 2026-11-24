@@ -50,7 +50,7 @@ file of that type > Open with > Choose another app > rustimgmount > Always. You 
 | Unmount it | Right-click the drive > **Eject**, or right-click the image > **rustimgmount** > **Unmount** |
 | Convert an image | Right-click > **rustimgmount** > **Convert to ...**, or **More formats and options...** |
 | Make an ISO from a folder | Right-click the folder > **Create ISO image**, or **Create disc image: more options...** for CSO or CHD (on Windows 11, under "Show more options") |
-| Check for a newer version | Tray icon > **Check for updates...** |
+| Update to a newer version | Tray icon > **Check for updates...** (it downloads and installs the update) |
 | See what's mounted | Click the rustimgmount icon in the notification area (start it from the Start Menu) |
 
 On Windows 11 the **rustimgmount** entry is in the main right-click menu when Developer Mode is on, and
@@ -236,11 +236,14 @@ Explorer caches icons, so new ones can take a sign-out to appear. The icons are 
 Click it for a menu of what's mounted (open or unmount each image), **Mount image...**, **Mount recent**
 (the last ten images you mounted), **Convert image...** (opens the Convert dialog), **Create ISO from folder...** (opens the Create dialog), **Unmount all**,
 **Start with Windows**, **Check for updates...**, **Check for updates when this starts** and
-**Uninstall rustimgmount...**. Checking for updates asks GitHub which release is newest and offers to
-open the download page; nothing is downloaded or installed by itself. It happens only when you click
-it, unless you tick **Check for updates when this starts**: then the tray app also looks once each time
-it starts, and shows a notification if there is a newer version. That is off until you turn it on. The
-request is for a public web page and says nothing about your PC or your files.
+**Uninstall rustimgmount...**. Checking for updates asks GitHub which release is newest and, if there is
+a newer one, offers to install it. If you say yes, the tray app downloads that release's installer
+(with a progress bar and Cancel), checks it against the checksum file published with it, and runs it: it shows its progress, keeps the
+choices you made when you first installed, and starts the tray app again when it's done. Nothing is
+downloaded or installed without you saying yes. The check happens only when you click it, unless you
+tick **Check for updates when this starts**: then the tray app also looks once each time it starts, and
+shows a notification if there is a newer version (click it to install). That is off until you turn it
+on. The requests are for public pages and files and say nothing about your PC or your files.
 
 **Progress.** Mounting from Explorer, the tray or the right-click menu shows no window when it's quick. If
 it takes more than about 1.5 seconds (converting a big image), a small progress dialog appears with a

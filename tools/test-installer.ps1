@@ -140,6 +140,19 @@ CheckOptions -Associate $true -FormatIcons $true -Autostart $false
 Install "associate,autostart"
 CheckInstalled
 CheckOptions -Associate $true -FormatIcons $false -Autostart $true
+
+# Updated the way the tray app does it: with the tray app running, no questions, the earlier
+# choices kept, and the tray app started again afterwards.
+Write-Host "== Updating from the tray app" -ForegroundColor Cyan
+$tray = Start-Process (Join-Path $dir "rustimgmountw.exe") -ArgumentList "--tray" -PassThru
+Start-Sleep 2
+$p = Start-Process $Installer -ArgumentList "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/TRAY=1" -Wait -PassThru
+Check "the update finished without an error" ($p.ExitCode -eq 0) "(exit code $($p.ExitCode))"
+Start-Sleep 2
+$again = Get-Process rustimgmountw -ErrorAction SilentlyContinue | Where-Object Id -ne $tray.Id
+Check "the tray app is running again after the update" ([bool]$again)
+CheckInstalled
+CheckOptions -Associate $true -FormatIcons $false -Autostart $true
 Uninstall
 
 # Nothing ticked: the program and its menu only.

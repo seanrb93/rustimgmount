@@ -54,6 +54,8 @@ Source: "..\LICENSE-UNRAR.txt"; DestDir: "{app}"; Flags: ignoreversion
 Filename: "{app}\rustimgmount.exe"; Parameters: "{code:SetupParams}"; Flags: runhidden; StatusMsg: "Setting up file associations and the right-click menu..."
 Filename: "{app}\rustimgmount.exe"; Parameters: "autostart on"; Flags: runhidden; Tasks: autostart
 Filename: "{app}\rustimgmountw.exe"; Parameters: "--tray"; Description: "Start the tray app now"; Flags: postinstall nowait skipifsilent
+; An update started from the tray app passes /TRAY=1: start the tray app again afterwards.
+Filename: "{app}\rustimgmountw.exe"; Parameters: "--tray"; Flags: nowait; Check: RestartTray
 ; Windows leaves some types (.vhd, .img, ...) with the app that had them until the user picks.
 Filename: "{app}\rustimgmount.exe"; Parameters: "associate"; Description: "Open Settings to choose rustimgmount for file types that other apps also open"; Flags: postinstall nowait skipifsilent runhidden unchecked; Tasks: associate
 
@@ -78,6 +80,11 @@ begin
     Result := Result + ' --no-associate'
   else if not WizardIsTaskSelected('associate\icons') then
     Result := Result + ' --plain-icons';
+end;
+
+function RestartTray: Boolean;
+begin
+  Result := ExpandConstant('{param:tray|0}') = '1';
 end;
 
 // A running tray app keeps rustimgmountw.exe open, which would block replacing it.

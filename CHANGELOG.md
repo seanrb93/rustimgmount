@@ -3,6 +3,16 @@
 What changed in each release of rustimgmount. The newest is first. Each section here
 becomes that version's release notes on GitHub.
 
+## 0.1.14
+
+- **Updates install themselves.** When the tray app finds a newer version (with **Check for
+  updates...**, or the notification from **Check for updates when this starts**), it offers to
+  install it. Say yes and it downloads the new installer with a progress bar (Cancel stops it),
+  checks it against the checksum file published with the release, and runs it. The installer keeps
+  the choices you made when you first installed, shows its progress, and starts the tray app again
+  when it's done. Nothing is downloaded or installed without you saying yes.
+- This works from 0.1.14 on: to get from an older version to this one, download it once by hand.
+
 ## 0.1.13
 
 - **Fixed: an error box when shutting down or signing out.** While Windows was shutting down, the

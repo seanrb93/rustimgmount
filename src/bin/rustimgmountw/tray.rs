@@ -29,6 +29,8 @@ const ID_UPDATE: usize = 17;
 const ID_AUTO_UPDATE: usize = 18;
 /// Posted to the tray window by the automatic check when it finds a newer version.
 const WM_UPDATE_FOUND: u32 = WM_APP + 2;
+/// Posted when the new version's installer is downloaded and checked.
+const WM_UPDATE_READY: u32 = WM_APP + 3;
 /// Sent by Windows (in the tray message) when the notification is clicked.
 const NIN_BALLOONUSERCLICK: u32 = 0x0405;
 /// The newer version the automatic check found, if any.
@@ -179,7 +181,7 @@ unsafe fn show_menu(hwnd: HWND) {
     append(menu, MF_STRING | if auto { MF_CHECKED } else { MF_UNCHECKED }, ID_AUTOSTART, "Start with Windows");
     append(menu, MF_SEPARATOR, 0, "");
     let found = UPDATE_FOUND.lock().ok().and_then(|f| f.clone());
-    append(menu, MF_STRING, ID_UPDATE, &found.map(|v| format!("Version {v} is available...")).unwrap_or_else(|| "Check for updates...".into()));
+    append(menu, MF_STRING, ID_UPDATE, &found.map(|v| format!("Install version {v}...")).unwrap_or_else(|| "Check for updates...".into()));
     append(menu, MF_STRING | if auto_update() { MF_CHECKED } else { MF_UNCHECKED }, ID_AUTO_UPDATE, "Check for updates when this starts");
     append(menu, MF_STRING, ID_UNINSTALL, "Uninstall rustimgmount...");
     append(menu, MF_STRING, ID_EXIT, "Exit");
@@ -231,9 +233,8 @@ fn auto_check(hwnd: isize, wait: std::time::Duration) {
     });
 }
 
-/// Tell the user about the newer version with a notification from the tray icon.
-unsafe fn announce_update(hwnd: HWND) {
-    let Some(version) = UPDATE_FOUND.lock().ok().and_then(|f| f.clone()) else { return };
+/// A notification from the tray icon.
+unsafe fn balloon(hwnd: HWND, title: &str, text: &str) {
     let mut nid = notify_data(hwnd);
     nid.uFlags = NIF_INFO;
     nid.dwInfoFlags = NIIF_INFO;
@@ -242,9 +243,174 @@ unsafe fn announce_update(hwnd: HWND) {
             dst[i] = c;
         }
     };
-    put(&mut nid.szInfoTitle, &format!("rustimgmount {version} is available"));
-    put(&mut nid.szInfo, &format!("You have {}. Click here, or use the tray menu, to open the download page.", env!("CARGO_PKG_VERSION")));
+    put(&mut nid.szInfoTitle, title);
+    put(&mut nid.szInfo, text);
     Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
+/// Tell the user about the newer version with a notification from the tray icon.
+unsafe fn announce_update(hwnd: HWND) {
+    let Some(version) = UPDATE_FOUND.lock().ok().and_then(|f| f.clone()) else { return };
+    balloon(hwnd, &format!("rustimgmount {version} is available"), &format!("You have {}. Click here to install it.", env!("CARGO_PKG_VERSION")));
+}
+
+/// A yes/no question; true for yes.
+fn ask(text: &str) -> bool {
+    let (t, c) = (wide(text), wide("rustimgmount"));
+    unsafe { MessageBoxW(null_mut(), t.as_ptr(), c.as_ptr(), MB_YESNO | MB_ICONINFORMATION | MB_SETFOREGROUND) == IDYES }
+}
+
+/// Set while an update is downloading, so it isn't started twice.
+static UPDATING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The checked installer, ready to run (handed to the window thread with WM_UPDATE_READY).
+static INSTALLER: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+/// Offer to install `version`, and if the user agrees, download and check it, then hand
+/// it to the window thread to run. Runs on a background thread.
+fn offer_update(hwnd: isize, version: &str) {
+    let mine = env!("CARGO_PKG_VERSION");
+    if !ask(&format!("Version {version} is available (you have {mine}).\n\nDownload and install it now? rustimgmount closes while it updates and starts again afterwards.")) {
+        return;
+    }
+    if UPDATING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let progress = std::sync::Arc::new(Progress::default());
+    let (p, v) = (progress.clone(), version.to_string());
+    let worker = std::thread::spawn(move || {
+        let result = fetch_installer(&v, &p);
+        p.done.store(true, std::sync::atomic::Ordering::SeqCst);
+        result
+    });
+    download_dialog(version, &progress);
+    let result = worker.join().unwrap_or_else(|_| Err("the download stopped unexpectedly".into()));
+    if progress.cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+        UPDATING.store(false, std::sync::atomic::Ordering::SeqCst);
+        return;
+    }
+    match result {
+        Ok(exe) => {
+            if let Ok(mut i) = INSTALLER.lock() {
+                *i = Some(exe);
+            }
+            unsafe { PostMessageW(hwnd as HWND, WM_UPDATE_READY, 0, 0) };
+        }
+        Err(e) => {
+            UPDATING.store(false, std::sync::atomic::Ordering::SeqCst);
+            if ask(&format!("Couldn't update: {e}.\n\nOpen the download page instead?")) {
+                open_releases();
+            }
+        }
+    }
+}
+
+/// How far a download has got, shared between the download and its progress dialog.
+#[derive(Default)]
+struct Progress {
+    got: std::sync::atomic::AtomicU64,
+    total: std::sync::atomic::AtomicU64,
+    cancelled: std::sync::atomic::AtomicBool,
+    done: std::sync::atomic::AtomicBool,
+    /// The dialog is closing because the download is done (so its Cancel isn't the user's).
+    closing: std::sync::atomic::AtomicBool,
+    bar_shows_percent: std::sync::atomic::AtomicBool,
+}
+
+/// A progress dialog with Cancel, shown until the download is done or cancelled. False if
+/// it couldn't be shown.
+fn download_dialog(version: &str, progress: &std::sync::Arc<Progress>) -> bool {
+    use std::sync::atomic::Ordering::SeqCst;
+    use windows_sys::Win32::UI::Controls::*;
+    unsafe extern "system" fn callback(hwnd: HWND, msg: i32, _w: WPARAM, _l: LPARAM, data: isize) -> i32 {
+        let p = &*(data as *const Progress);
+        match msg {
+            TDN_CREATED => {
+                SendMessageW(hwnd, TDM_SET_PROGRESS_BAR_MARQUEE as u32, 1, 30);
+            }
+            TDN_TIMER => {
+                if p.done.load(SeqCst) {
+                    p.closing.store(true, SeqCst);
+                    SendMessageW(hwnd, TDM_CLICK_BUTTON as u32, IDCANCEL as usize, 0);
+                    return 0;
+                }
+                let (got, total) = (p.got.load(SeqCst), p.total.load(SeqCst));
+                if total > 0 {
+                    // Switching from the "busy" animation resets the bar, so it's done once.
+                    if !p.bar_shows_percent.swap(true, SeqCst) {
+                        SendMessageW(hwnd, TDM_SET_PROGRESS_BAR_MARQUEE as u32, 0, 0);
+                        SendMessageW(hwnd, TDM_SET_MARQUEE_PROGRESS_BAR as u32, 0, 0);
+                        SendMessageW(hwnd, TDM_SET_PROGRESS_BAR_RANGE as u32, 0, 100 << 16);
+                    }
+                    SendMessageW(hwnd, TDM_SET_PROGRESS_BAR_POS as u32, (got * 100 / total).min(100) as usize, 0);
+                    let mb = |b: u64| b as f64 / 1_048_576.0;
+                    let text = wide(&format!("{:.1} of {:.1} MB", mb(got), mb(total)));
+                    SendMessageW(hwnd, TDM_SET_ELEMENT_TEXT as u32, TDE_CONTENT as usize, text.as_ptr() as isize);
+                }
+            }
+            TDN_BUTTON_CLICKED => {
+                if !p.closing.load(SeqCst) {
+                    p.cancelled.store(true, SeqCst);
+                }
+            }
+            _ => {}
+        }
+        0
+    }
+    let (title, main, content) = (wide("rustimgmount"), wide(&format!("Downloading rustimgmount {version}")), wide("Connecting to GitHub..."));
+    unsafe {
+        let mut cfg: TASKDIALOGCONFIG = std::mem::zeroed();
+        cfg.cbSize = std::mem::size_of::<TASKDIALOGCONFIG>() as u32;
+        cfg.dwFlags = TDF_SHOW_PROGRESS_BAR | TDF_SHOW_MARQUEE_PROGRESS_BAR | TDF_CALLBACK_TIMER | TDF_ALLOW_DIALOG_CANCELLATION;
+        cfg.dwCommonButtons = TDCBF_CANCEL_BUTTON;
+        cfg.pszWindowTitle = title.as_ptr();
+        cfg.pszMainInstruction = main.as_ptr();
+        cfg.pszContent = content.as_ptr();
+        cfg.pfCallback = Some(callback);
+        cfg.lpCallbackData = std::sync::Arc::as_ptr(progress) as isize;
+        cfg.cxWidth = 260;
+        TaskDialogIndirect(&cfg, null_mut(), null_mut(), null_mut()) == 0
+    }
+}
+
+/// Download the installer of `version` from its GitHub release into the temporary folder,
+/// and check it against the checksum file published with it.
+fn fetch_installer(version: &str, progress: &Progress) -> Result<std::path::PathBuf, String> {
+    use sha2::Digest;
+    let name = format!("rustimgmount-{version}-setup.exe");
+    let base = format!("/seanrb93/rustimgmount/releases/download/v{version}");
+    let sums = download(&format!("{base}/rustimgmount-{version}-sha256.txt"), None).ok_or("the checksum file couldn't be downloaded")?;
+    let want = String::from_utf8_lossy(&sums)
+        .lines()
+        .find_map(|l| {
+            let (hash, file) = l.split_once(char::is_whitespace)?;
+            (file.trim().trim_start_matches('*') == name).then(|| hash.to_ascii_lowercase())
+        })
+        .ok_or("the checksum file doesn't list the installer")?;
+    let exe = download(&format!("{base}/{name}"), Some(progress)).ok_or("the installer couldn't be downloaded")?;
+    let got: String = sha2::Sha256::digest(&exe).iter().map(|b| format!("{b:02x}")).collect();
+    if got != want {
+        return Err("the downloaded installer doesn't match its checksum".into());
+    }
+    let dir = std::env::temp_dir().join("rustimgmount-update");
+    let path = dir.join(&name);
+    std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &exe)).map_err(|e| format!("the installer couldn't be saved ({e})"))?;
+    Ok(path)
+}
+
+/// Run the checked installer and close, so it can replace this program. It runs without
+/// questions (keeping the choices made when it was first installed), shows its progress,
+/// and starts the tray app again when done (/TRAY=1).
+unsafe fn run_installer(hwnd: HWND) {
+    let Some(exe) = INSTALLER.lock().ok().and_then(|mut i| i.take()) else { return };
+    match std::process::Command::new(&exe).args(["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/TRAY=1"]).spawn() {
+        Ok(_) => {
+            DestroyWindow(hwnd);
+        }
+        Err(e) => {
+            UPDATING.store(false, std::sync::atomic::Ordering::SeqCst);
+            message_box(&format!("Couldn't start the installer ({e}).\n\n{}", exe.display()), true);
+        }
+    }
 }
 
 fn open_releases() {
@@ -266,45 +432,99 @@ fn latest_version() -> Option<String> {
     (!version.is_empty() && version.chars().all(|c| c.is_ascii_digit() || c == '.')).then(|| version.to_string())
 }
 
-/// Where GitHub's "latest release" page redirects to, which names the newest version.
-/// Asked with a HEAD request through Windows' own HTTP client, following no redirect.
-fn latest_release_location() -> Option<String> {
-    use windows_sys::Win32::Networking::WinHttp::*;
-    struct H(*mut std::ffi::c_void);
-    impl Drop for H {
-        fn drop(&mut self) {
-            if !self.0.is_null() {
-                unsafe { WinHttpCloseHandle(self.0) };
-            }
+struct Http(*mut std::ffi::c_void);
+impl Drop for Http {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { windows_sys::Win32::Networking::WinHttp::WinHttpCloseHandle(self.0) };
         }
     }
-    let path = RELEASES.strip_prefix("https://github.com")?;
+}
+
+/// github.com's answer to one request. (Fields close in this order: request first.)
+struct Answer {
+    request: Http,
+    _connection: Http,
+    _session: Http,
+}
+
+/// Send a request to github.com through Windows' own HTTP client and wait for the answer.
+fn github(method: &str, path: &str, follow_redirects: bool) -> Option<Answer> {
+    use windows_sys::Win32::Networking::WinHttp::*;
     unsafe {
-        let session = H(WinHttpOpen(wide(&format!("rustimgmount/{}", env!("CARGO_PKG_VERSION"))).as_ptr(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, null(), null(), 0));
+        let session = Http(WinHttpOpen(wide(&format!("rustimgmount/{}", env!("CARGO_PKG_VERSION"))).as_ptr(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, null(), null(), 0));
         if session.0.is_null() {
             return None;
         }
         WinHttpSetTimeouts(session.0, 15_000, 15_000, 15_000, 15_000);
-        let connection = H(WinHttpConnect(session.0, wide("github.com").as_ptr(), 443, 0));
+        let connection = Http(WinHttpConnect(session.0, wide("github.com").as_ptr(), 443, 0));
         if connection.0.is_null() {
             return None;
         }
-        let request = H(WinHttpOpenRequest(connection.0, wide("HEAD").as_ptr(), wide(path).as_ptr(), null(), null(), null(), WINHTTP_FLAG_SECURE));
+        let request = Http(WinHttpOpenRequest(connection.0, wide(method).as_ptr(), wide(path).as_ptr(), null(), null(), null(), WINHTTP_FLAG_SECURE));
         if request.0.is_null() {
             return None;
         }
-        let no_redirects: u32 = WINHTTP_DISABLE_REDIRECTS;
-        WinHttpSetOption(request.0, WINHTTP_OPTION_DISABLE_FEATURE, &no_redirects as *const u32 as *const _, 4);
+        if !follow_redirects {
+            let no_redirects: u32 = WINHTTP_DISABLE_REDIRECTS;
+            WinHttpSetOption(request.0, WINHTTP_OPTION_DISABLE_FEATURE, &no_redirects as *const u32 as *const _, 4);
+        }
         if WinHttpSendRequest(request.0, null(), 0, null(), 0, 0, 0) == 0 || WinHttpReceiveResponse(request.0, null_mut()) == 0 {
             return None;
         }
-        let mut buf = vec![0u16; 1024];
-        let mut len = (buf.len() * 2) as u32;
-        if WinHttpQueryHeaders(request.0, WINHTTP_QUERY_LOCATION, null(), buf.as_mut_ptr() as *mut _, &mut len, null_mut()) == 0 {
+        Some(Answer { request, _connection: connection, _session: session })
+    }
+}
+
+/// Download a file from github.com (release downloads are redirected to GitHub's file host),
+/// reporting to `progress` if given and stopping if it's cancelled.
+fn download(path: &str, progress: Option<&Progress>) -> Option<Vec<u8>> {
+    use std::sync::atomic::Ordering::SeqCst;
+    use windows_sys::Win32::Networking::WinHttp::*;
+    let answer = github("GET", path, true)?;
+    unsafe {
+        let number = |query: u32| {
+            let (mut n, mut len) = (0u32, 4u32);
+            WinHttpQueryHeaders(answer.request.0, query | WINHTTP_QUERY_FLAG_NUMBER, null(), &mut n as *mut u32 as *mut _, &mut len, null_mut());
+            n
+        };
+        if number(WINHTTP_QUERY_STATUS_CODE) != 200 {
             return None;
         }
-        Some(String::from_utf16_lossy(&buf[..len as usize / 2]))
+        if let Some(p) = progress {
+            p.total.store(number(WINHTTP_QUERY_CONTENT_LENGTH) as u64, SeqCst);
+        }
+        let (mut body, mut chunk) = (Vec::new(), vec![0u8; 1 << 16]);
+        loop {
+            if progress.is_some_and(|p| p.cancelled.load(SeqCst)) {
+                return None;
+            }
+            let mut got = 0u32;
+            if WinHttpReadData(answer.request.0, chunk.as_mut_ptr() as *mut _, chunk.len() as u32, &mut got) == 0 {
+                return None;
+            }
+            if got == 0 {
+                return Some(body);
+            }
+            body.extend_from_slice(&chunk[..got as usize]);
+            if let Some(p) = progress {
+                p.got.store(body.len() as u64, SeqCst);
+            }
+        }
     }
+}
+
+/// Where GitHub's "latest release" page redirects to, which names the newest version.
+/// Asked with a HEAD request, following no redirect.
+fn latest_release_location() -> Option<String> {
+    use windows_sys::Win32::Networking::WinHttp::*;
+    let answer = github("HEAD", RELEASES.strip_prefix("https://github.com")?, false)?;
+    let mut buf = vec![0u16; 1024];
+    let mut len = (buf.len() * 2) as u32;
+    if unsafe { WinHttpQueryHeaders(answer.request.0, WINHTTP_QUERY_LOCATION, null(), buf.as_mut_ptr() as *mut _, &mut len, null_mut()) } == 0 {
+        return None;
+    }
+    Some(String::from_utf16_lossy(&buf[..len as usize / 2]))
 }
 
 /// Is version `a` newer than `b`? ("0.1.10" is newer than "0.1.9".)
@@ -313,22 +533,16 @@ fn newer(a: &str, b: &str) -> bool {
     parts(a) > parts(b)
 }
 
-fn check_for_updates() {
+fn check_for_updates(hwnd: isize) {
     let mine = env!("CARGO_PKG_VERSION");
-    let ask = |text: &str| unsafe {
-        let (t, c) = (wide(text), wide("rustimgmount"));
-        MessageBoxW(null_mut(), t.as_ptr(), c.as_ptr(), MB_YESNO | MB_ICONINFORMATION | MB_SETFOREGROUND) == IDYES
-    };
-    let open = match latest_version() {
-        Some(latest) if newer(&latest, mine) => ask(&format!("Version {latest} is available (you have {mine}).\n\nOpen the download page?")),
-        Some(_) => {
-            message_box(&format!("You have the latest version ({mine})."), false);
-            false
+    match latest_version() {
+        Some(latest) if newer(&latest, mine) => offer_update(hwnd, &latest),
+        Some(_) => message_box(&format!("You have the latest version ({mine})."), false),
+        None => {
+            if ask(&format!("Couldn't reach GitHub to check (you have version {mine}).\n\nOpen the releases page in your browser?")) {
+                open_releases();
+            }
         }
-        None => ask(&format!("Couldn't reach GitHub to check (you have version {mine}).\n\nOpen the releases page in your browser?")),
-    };
-    if open {
-        open_releases();
     }
 }
 
@@ -364,6 +578,32 @@ mod tests {
             SendMessageW(hwnd, WM_ENDSESSION, 1, 0);
             assert_eq!(IsWindow(hwnd), 0, "the tray closes when shutdown goes ahead");
         }
+    }
+
+    /// Downloads a real release's installer and checks it, so it only runs when asked for.
+    #[test]
+    #[ignore]
+    fn fetches_and_checks_installer() {
+        use std::sync::atomic::Ordering::SeqCst;
+        // With the progress dialog, as the tray app does it: it shows the size and closes by itself.
+        let progress = std::sync::Arc::new(super::Progress::default());
+        let p = progress.clone();
+        let worker = std::thread::spawn(move || {
+            let r = super::fetch_installer("0.1.13", &p);
+            p.done.store(true, SeqCst);
+            r
+        });
+        assert!(super::download_dialog("0.1.13", &progress), "the dialog opens");
+        let exe = worker.join().unwrap().unwrap();
+        let size = std::fs::metadata(&exe).unwrap().len();
+        assert!(size > 1_000_000);
+        assert_eq!((progress.got.load(SeqCst), progress.total.load(SeqCst)), (size, size));
+        assert!(!progress.cancelled.load(SeqCst), "closing by itself isn't a cancel");
+
+        assert!(super::fetch_installer("0.0.1", &Default::default()).is_err());
+        let cancelled = super::Progress::default();
+        cancelled.cancelled.store(true, SeqCst);
+        assert!(super::fetch_installer("0.1.13", &cancelled).is_err(), "a cancelled download stops");
     }
 
     #[test]
@@ -434,13 +674,20 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let event = (lparam & 0xFFFF) as u32;
             if event == WM_LBUTTONUP || event == WM_RBUTTONUP || event == WM_CONTEXTMENU {
                 show_menu(hwnd);
-            } else if event == NIN_BALLOONUSERCLICK && UPDATE_FOUND.lock().is_ok_and(|f| f.is_some()) {
-                open_releases();
+            } else if event == NIN_BALLOONUSERCLICK && !UPDATING.load(std::sync::atomic::Ordering::SeqCst) {
+                if let Some(v) = UPDATE_FOUND.lock().ok().and_then(|f| f.clone()) {
+                    let h = hwnd as isize;
+                    std::thread::spawn(move || offer_update(h, &v));
+                }
             }
             0
         }
         WM_UPDATE_FOUND => {
             announce_update(hwnd);
+            0
+        }
+        WM_UPDATE_READY => {
+            run_installer(hwnd);
             0
         }
         WM_TIMER => {
@@ -474,7 +721,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     }
                 }
                 ID_UPDATE => {
-                    std::thread::spawn(check_for_updates);
+                    let h = hwnd as isize;
+                    std::thread::spawn(move || check_for_updates(h));
                 }
                 ID_AUTO_UPDATE => {
                     let on = !auto_update();
