@@ -146,8 +146,11 @@ CheckOptions -Associate $true -FormatIcons $false -Autostart $true
 Write-Host "== Updating from the tray app" -ForegroundColor Cyan
 $tray = Start-Process (Join-Path $dir "rustimgmountw.exe") -ArgumentList "--tray" -PassThru
 Start-Sleep 2
-$p = Start-Process $Installer -ArgumentList "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/TRAY=1" -Wait -PassThru
-Check "the update finished without an error" ($p.ExitCode -eq 0) "(exit code $($p.ExitCode))"
+# Not -Wait: that also waits for what the installer starts, and the tray app keeps running.
+$p = Start-Process $Installer -ArgumentList "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/TRAY=1" -PassThru
+$null = $p.Handle # keeps the exit code readable
+$finished = $p.WaitForExit(300000)
+Check "the update finished without an error" ($finished -and $p.ExitCode -eq 0) "(finished: $finished, exit code $($p.ExitCode))"
 Start-Sleep 2
 $again = Get-Process rustimgmountw -ErrorAction SilentlyContinue | Where-Object Id -ne $tray.Id
 Check "the tray app is running again after the update" ([bool]$again)
