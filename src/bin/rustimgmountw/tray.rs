@@ -58,8 +58,15 @@ fn recent_images() -> Vec<String> {
 }
 static mut TASKBAR_CREATED: u32 = 0;
 
+/// Set when Windows says it's shutting down or signing out.
+static ENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Run rustimgmount.exe hidden and return its standard output.
 fn cli_output(args: &[&str]) -> Option<String> {
+    // Programs started once shutdown is under way fail with "unable to start correctly (0xc0000142)".
+    if ENDING.load(std::sync::atomic::Ordering::SeqCst) || unsafe { GetSystemMetrics(SM_SHUTTINGDOWN) } != 0 {
+        return None;
+    }
     let out = std::process::Command::new(cli_exe()?).args(args).creation_flags(0x0800_0000).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -335,6 +342,30 @@ mod tests {
         assert!(v.split('.').count() >= 3, "odd version {v}");
     }
 
+    /// At shutdown the tray must stop starting rustimgmount.exe (Windows shows
+    /// "unable to start correctly (0xc0000142)" for it) and close when shutdown goes ahead.
+    #[test]
+    fn stops_at_shutdown() {
+        use super::*;
+        use std::sync::atomic::Ordering::SeqCst;
+        unsafe {
+            let hinst = GetModuleHandleW(null());
+            let class = wide("rustimgmount_tray_test");
+            let wc = WNDCLASSW { lpfnWndProc: Some(wnd_proc), hInstance: hinst, lpszClassName: class.as_ptr(), ..std::mem::zeroed() };
+            RegisterClassW(&wc);
+            let hwnd = CreateWindowExW(0, class.as_ptr(), class.as_ptr(), 0, 0, 0, 0, 0, null_mut(), null_mut(), hinst, null());
+            assert!(!hwnd.is_null());
+            assert_eq!(SendMessageW(hwnd, WM_QUERYENDSESSION, 0, 0), 1, "shutdown must not be blocked");
+            assert!(ENDING.load(SeqCst));
+            assert!(cli_output(&["--version"]).is_none(), "nothing may be started during shutdown");
+            SendMessageW(hwnd, WM_ENDSESSION, 0, 0);
+            assert!(!ENDING.load(SeqCst), "a cancelled shutdown resumes");
+            SendMessageW(hwnd, WM_QUERYENDSESSION, 0, 0);
+            SendMessageW(hwnd, WM_ENDSESSION, 1, 0);
+            assert_eq!(IsWindow(hwnd), 0, "the tray closes when shutdown goes ahead");
+        }
+    }
+
     #[test]
     fn versions_compare_by_number() {
         assert!(super::newer("0.1.10", "0.1.9"));
@@ -485,6 +516,21 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     }
                 }
                 _ => {}
+            }
+            0
+        }
+        // Shutdown or sign-out: stop starting rustimgmount.exe, and close once it goes ahead.
+        WM_QUERYENDSESSION => {
+            ENDING.store(true, std::sync::atomic::Ordering::SeqCst);
+            KillTimer(hwnd, TIMER_REFRESH);
+            1
+        }
+        WM_ENDSESSION => {
+            if wparam != 0 {
+                DestroyWindow(hwnd);
+            } else {
+                ENDING.store(false, std::sync::atomic::Ordering::SeqCst);
+                SetTimer(hwnd, TIMER_REFRESH, 10_000, None);
             }
             0
         }

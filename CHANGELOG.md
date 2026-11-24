@@ -3,6 +3,14 @@
 What changed in each release of rustimgmount. The newest is first. Each section here
 becomes that version's release notes on GitHub.
 
+## 0.1.13
+
+- **Fixed: an error box when shutting down or signing out.** While Windows was shutting down, the
+  tray app could still start its regular check of what's mounted, and Windows showed
+  "rustimgmount.exe - Application Error: The application was unable to start correctly
+  (0xc0000142)". The tray app now stops checking as soon as Windows announces a shutdown or
+  sign-out, and closes when it goes ahead.
+
 ## 0.1.12
 
 - **Less like malware to antivirus programs.** Microsoft Defender flagged a copy of rustimgmount as
